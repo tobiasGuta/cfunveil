@@ -4,19 +4,13 @@ Runs all modules concurrently and aggregates results
 """
 
 import asyncio
-import aiohttp
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.live import Live
 from rich.table import Table
 
-from core.dns_enum import DNSEnumerator
-from core.cert_intel import CertIntelligence
-from core.shodan_pivot import ShodanPivot
-from core.headers_probe import HeadersProbe
-from core.asn_intel import ASNIntelligence
-from core.historical import HistoricalSources
-from core.validator import OriginValidator
+# Defer imports of heavy optional modules until runtime to improve import-time
+# resilience (avoids requiring all optional deps just to import the engine).
 
 
 class ReconEngine:
@@ -42,12 +36,13 @@ class ReconEngine:
             self.discovered_ips[ip]["details"].update(extra)
 
     def _is_valid_ip(self, ip: str) -> bool:
-        import re
-        pattern = r"^(\d{1,3}\.){3}\d{1,3}$"
-        if not re.match(pattern, ip):
+        # Accept both IPv4 and IPv6 using the stdlib `ipaddress` module
+        try:
+            import ipaddress
+            ipaddress.ip_address(ip)
+            return True
+        except Exception:
             return False
-        parts = ip.split(".")
-        return all(0 <= int(p) <= 255 for p in parts)
 
     async def run(self) -> dict:
         results = {
@@ -59,6 +54,13 @@ class ReconEngine:
             "asn_data": {},
             "summary": {}
         }
+
+        # Respect verify_ssl config: when False, disable SSL verification on connector
+        # Import aiohttp lazily to avoid requiring it at module import time
+        try:
+            import aiohttp
+        except Exception:
+            raise RuntimeError("Required dependency `aiohttp` is not installed. Install it with `pip install aiohttp` to run scans.")
 
         # Respect verify_ssl config: when False, disable SSL verification on connector
         if self.config.get("verify_ssl") is False:
@@ -82,6 +84,7 @@ class ReconEngine:
 
             # ── Module 1: DNS Enumeration ─────────────────────────────
             self.console.print("[bold green][1/6][/bold green] DNS Enumeration & Subdomain Harvest...")
+            from core.dns_enum import DNSEnumerator
             dns_enum = DNSEnumerator(self.target, self.root_domain, self.console)
             dns_results = await dns_enum.run()
 
@@ -93,6 +96,7 @@ class ReconEngine:
 
             # ── Module 2: SSL Certificate Intelligence ───────────────
             self.console.print("[bold green][2/6][/bold green] SSL Certificate Transparency (crt.sh + Censys)...")
+            from core.cert_intel import CertIntelligence
             cert_intel = CertIntelligence(
                 self.root_domain, self.config, self.console, session
             )
@@ -110,6 +114,7 @@ class ReconEngine:
             shodan = None
             shodan_task = None
             if self.config.get("shodan_key"):
+                from core.shodan_pivot import ShodanPivot
                 shodan = ShodanPivot(
                     self.target, self.root_domain, self.config, self.console
                 )
@@ -117,6 +122,7 @@ class ReconEngine:
             self.console.print("[bold green][3/6][/bold green] Shodan Intelligence Pivot...")
 
             self.console.print("[bold green][4/6][/bold green] Historical DNS & Passive Sources...")
+            from core.historical import HistoricalSources
             historical = HistoricalSources(
                 self.root_domain, self.config, self.console, session
             )
@@ -176,6 +182,7 @@ class ReconEngine:
             # ── Module 5: ASN Intelligence ──────────────────────────
             self.console.print("[bold green][5/6][/bold green] ASN & BGP Intelligence...")
             all_ips = list(self.discovered_ips.keys())
+            from core.asn_intel import ASNIntelligence
             asn_intel = ASNIntelligence(all_ips, self.console, session)
             asn_results = await asn_intel.run()
 
@@ -194,6 +201,7 @@ class ReconEngine:
                 results["ips"] = {ip: {**meta, "confidence": 0, "validated": False}
                                   for ip, meta in self.discovered_ips.items()}
             else:
+                from core.validator import OriginValidator
                 validator = OriginValidator(
                     self.target,
                     self.root_domain,

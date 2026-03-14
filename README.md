@@ -4,6 +4,22 @@ CloudFlare Origin IP Discovery Tool for Bug Bounty Hunters
 
 Chains several intelligence modules to uncover origin IPs hidden behind CloudFlare and similar reverse proxies.
 
+## What's New (2026-03-14)
+
+- Added support for Censys Platform PAT via `--censys-pat` and optional `--censys-org` CLI options.
+- Improved IP validation to support both IPv4 and IPv6 addresses.
+- More robust dependency handling: missing optional libraries (`shodan`, `aiodns`, `aiohttp`) now produce actionable messages and are lazily imported so the tool can be imported without every optional dependency installed.
+- Added a small unit test covering IP validation and a GitHub Actions CI workflow at `.github/workflows/ci.yml` to run the test suite.
+- Minor CLI input sanity checks for numeric options like `--threads` and `--timeout`.
+
+Run tests locally:
+
+```bash
+python -m pytest tests
+```
+
+If you want me to push these changes and the new CI workflow to the repo, tell me and I'll commit and push.
+
 ---
 
 ## Installation

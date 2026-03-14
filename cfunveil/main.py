@@ -30,7 +30,7 @@ console = Console()
 @click.option("--censys-id", envvar="CENSYS_API_ID", help="Censys API ID (optional)")
 @click.option("--censys-secret", envvar="CENSYS_API_SECRET", help="Censys API secret (optional)")
 @click.option("--censys-pat", envvar="CENSYS_API_PAT", help="Censys Personal Access Token (PAT) for Platform API (optional)")
-@click.option("--censys-org", envvar="CENSYS_ORG_ID", help="Censys Organization ID (optional)")
+@click.option("--censys-org", envvar="CENSYS_API_ORG_ID", help="Censys Organization ID (optional)")
 @click.option("--threads", "-T", default=50, show_default=True, help="Concurrent async tasks")
 @click.option("--timeout", default=8, show_default=True, help="Request timeout in seconds")
 @click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for HTTP requests")
@@ -50,7 +50,7 @@ console = Console()
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
-def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet):
+def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -74,6 +74,12 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout,
 
     console.print(f"\n[bold cyan][>>] Target:[/bold cyan] [bold white]{target}[/bold white]")
     console.print(f"[dim]    Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
+
+    # Sanity-check numeric options
+    if threads is None or int(threads) < 1:
+        threads = 1
+    if timeout is None or float(timeout) <= 0:
+        timeout = 8
 
     config = {
         "target": target,
@@ -114,13 +120,15 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout,
         try:
             import shodan as _sh
         except Exception:
-            console.print("[yellow][!] Shodan library not installed — Shodan features will be disabled[/yellow]")
+            console.print("[red][!] Shodan API key provided but `shodan` library is not installed.\n    Install via `pip install shodan` or omit the `--shodan-key` option to skip Shodan features.[/red]")
             config["shodan_key"] = None
 
     try:
         import aiodns as _adns
+        config["aiodns_available"] = True
     except Exception:
-        console.print("[dim][*] aiodns not available — reverse DNS lookups will be skipped[/dim]")
+        console.print("[yellow][*] Optional dependency `aiodns` not installed — reverse DNS lookups will be skipped.\n    Install via `pip install aiodns` to enable DNS async lookups.[/yellow]")
+        config["aiodns_available"] = False
 
     # Process email headers input (file or IMAP). Extract IPs and attach to config.initial_ips
     initial_ips = []
