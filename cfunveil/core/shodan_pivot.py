@@ -281,50 +281,12 @@ class ShodanPivot:
         """Full Shodan host lookup — use after confirming an IP is the origin"""
         try:
             host = self.api.host(ip)
-            try:
-                # Try to fetch favicon using cloudscraper (handles JS/anti-bot)
-                url = f"https://{self.target}/favicon.ico"
-                favicon_data = None
-                try:
-                    import cloudscraper
-                    scraper = cloudscraper.create_scraper(
-                        browser={"browser": "chrome", "platform": "windows", "desktop": True}
-                    )
-                    resp = scraper.get(url, timeout=10)
-                    if resp.status_code == 200 and resp.content:
-                        favicon_data = resp.content
-                except Exception:
-                    # fallback to urllib
-                    try:
-                        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                        response = urllib.request.urlopen(req, timeout=5)
-                        favicon_data = response.read()
-                    except Exception:
-                        favicon_data = None
-
-                if not favicon_data:
-                    self.logger.debug("No favicon data fetched for %s", self.target)
-                    return
-
-                # Compute Shodan-compatible MurmurHash from base64-encoded favicon
-                favicon_b64 = base64.encodebytes(favicon_data)
-                favicon_hash = self._murmurhash(favicon_b64)
-
-                self.console.print(f"    [dim]Favicon hash: {favicon_hash}[/dim]")
-
-                query = f'http.favicon.hash:{favicon_hash} -org:"Cloudflare"'
-                try:
-                    results = self.api.search(query, limit=50)
-                    for match in results.get("matches", []):
-                        self._add_result(match)
-                except shodan.APIError as e:
-                    self.logger.debug("Favicon search failed: %s", e)
-                except Exception as e:
-                    self.logger.debug("Favicon search unexpected error: %s", e)
-
+            return {
+                "ip": ip,
                 "tags": host.get("tags", []),
                 "hostnames": host.get("hostnames", []),
                 "last_update": host.get("last_update"),
+                "host": host,
             }
         except Exception as e:
             return {"ip": ip, "error": str(e)}
