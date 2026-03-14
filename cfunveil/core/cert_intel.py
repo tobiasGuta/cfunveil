@@ -87,33 +87,67 @@ class CertIntelligence:
             pass
 
     async def _query_censys(self):
-        """Query Censys certificates API"""
+        """Query Censys certificates via Platform API (PAT) if available, else fallback to legacy API.
+
+        Uses Personal Access Token (PAT) with Bearer auth and optional X-Organization-ID header.
+        """
         try:
-            import base64
-            auth = base64.b64encode(
-                f"{self.config['censys_id']}:{self.config['censys_secret']}".encode()
-            ).decode()
+            pat = self.config.get("censys_pat")
+            org = self.config.get("censys_org")
 
-            headers = {"Authorization": f"Basic {auth}"}
-            url = "https://search.censys.io/api/v2/certificates/search"
-            params = {
-                "q": f"parsed.names: {self.root_domain}",
-                "per_page": 100,
-            }
-            from core.utils import http_get_with_retry
-            resp = await http_get_with_retry(self.session, url, headers=headers, params=params, attempts=3, timeout=15)
-            if not resp or resp.status != 200:
-                return
-            data = await resp.json()
+            # Try Platform API (PAT)
+            if pat:
+                url = "https://api.platform.censys.io/v1/search/certificates"
+                headers = {
+                    "Authorization": f"Bearer {pat}",
+                    "Accept": "application/vnd.censys.api.v3.certificate.v1+json",
+                }
+                if org:
+                    headers["X-Organization-ID"] = org
 
-            hits = data.get("result", {}).get("hits", [])
-            for hit in hits:
-                names = hit.get("parsed", {}).get("names", [])
-                for name in names:
-                    if self.root_domain in name:
-                        self.found_subdomains.add(name.lstrip("*."))
+                body = {"query": f"parsed.names: {self.root_domain}", "page": 1, "per_page": 100}
+                from core.utils import http_post_with_retry
+                resp = await http_post_with_retry(self.session, url, json_body=body, headers=headers, attempts=3, timeout=15)
+                if resp and resp.status == 200:
+                    data = await resp.json()
+                    hits = data.get("results") or data.get("hits") or []
+                    for hit in hits:
+                        names = []
+                        parsed = hit.get("parsed") if isinstance(hit.get("parsed"), dict) else None
+                        if parsed:
+                            names = parsed.get("names", [])
+                        names = names or hit.get("names") or []
+                        for name in names:
+                            if self.root_domain in name:
+                                self.found_subdomains.add(name.lstrip("*."))
 
-            self.console.print(f"    [dim]Censys: {len(hits)} cert hits[/dim]")
+                    self.console.print(f"    [dim]Censys (Platform API): {len(hits)} cert results[/dim]")
+                    return
+
+            # Fallback to legacy Censys v2 (id/secret)
+            if self.config.get("censys_id") and self.config.get("censys_secret"):
+                import base64
+                auth = base64.b64encode(
+                    f"{self.config['censys_id']}:{self.config['censys_secret']}".encode()
+                ).decode()
+
+                headers = {"Authorization": f"Basic {auth}"}
+                url = "https://search.censys.io/api/v2/certificates/search"
+                params = {"q": f"parsed.names: {self.root_domain}", "per_page": 100}
+                from core.utils import http_get_with_retry
+                resp = await http_get_with_retry(self.session, url, headers=headers, params=params, attempts=3, timeout=15)
+                if not resp or resp.status != 200:
+                    return
+                data = await resp.json()
+
+                hits = data.get("result", {}).get("hits", [])
+                for hit in hits:
+                    names = hit.get("parsed", {}).get("names", [])
+                    for name in names:
+                        if self.root_domain in name:
+                            self.found_subdomains.add(name.lstrip("*."))
+
+                self.console.print(f"    [dim]Censys (legacy): {len(hits)} cert hits[/dim]")
 
         except Exception as e:
             self.console.print(f"    [dim yellow]Censys error: {e}[/dim yellow]")

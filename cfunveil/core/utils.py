@@ -23,6 +23,29 @@ async def http_get_with_retry(session, url: str, headers: dict = None, params: d
                 return resp
         except asyncio.CancelledError:
             raise
+
+
+async def http_post_with_retry(session, url: str, json_body: dict = None, headers: dict = None, attempts: int = 3, timeout: int = 10):
+    backoff = 1
+    for attempt in range(attempts):
+        try:
+            async with session.post(url, headers=headers, json=json_body, timeout=None) as resp:
+                if resp.status in (429, 503):
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(backoff)
+                        backoff *= 2
+                        continue
+                    else:
+                        return resp
+                return resp
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if attempt < attempts - 1:
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+            raise
         except Exception:
             if attempt < attempts - 1:
                 await asyncio.sleep(backoff)

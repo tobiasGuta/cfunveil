@@ -29,6 +29,8 @@ console = Console()
 @click.option("--st-key", "-stk", envvar="ST_API_KEY", help="SecurityTrails API key (optional)")
 @click.option("--censys-id", envvar="CENSYS_API_ID", help="Censys API ID (optional)")
 @click.option("--censys-secret", envvar="CENSYS_API_SECRET", help="Censys API secret (optional)")
+@click.option("--censys-pat", envvar="CENSYS_API_PAT", help="Censys Personal Access Token (PAT) for Platform API (optional)")
+@click.option("--censys-org", envvar="CENSYS_ORG_ID", help="Censys Organization ID (optional)")
 @click.option("--threads", "-T", default=50, show_default=True, help="Concurrent async tasks")
 @click.option("--timeout", default=8, show_default=True, help="Request timeout in seconds")
 @click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for HTTP requests")
@@ -77,6 +79,8 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout,
         "st_key": st_key,
         "censys_id": censys_id,
         "censys_secret": censys_secret,
+        "censys_pat": censys_pat,
+        "censys_org": censys_org,
         "threads": threads,
         "timeout": timeout,
         "validate": not no_validate,

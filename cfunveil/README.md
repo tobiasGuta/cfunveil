@@ -9,7 +9,7 @@ Chains several intelligence modules to uncover origin IPs hidden behind CloudFla
 ## Installation
 
 ```bash
-git clone <your-repo>
+git clone https://github.com/tobiasGuta/cfunveil.git
 cd cfunveil
 pip install -r requirements.txt
 ```
@@ -22,6 +22,51 @@ ST_API_KEY=your_securitytrails_key
 CENSYS_API_ID=your_censys_id
 CENSYS_API_SECRET=your_censys_secret
 ```
+
+You can also generate a Censys Personal Access Token (PAT) and set it here with an optional organization ID:
+
+```env
+CENSYS_API_PAT=your_personal_access_token
+CENSYS_ORG_ID=12345678-91011-1213
+```
+
+### 1\. Shodan (`SHODAN_API_KEY`)
+
+-   **Link:** <https://account.shodan.io/>
+
+-   **How to find it:** Create a free account or log in. Your API key will be displayed directly on your main account overview dashboard in the top right corner.
+
+* * * * *
+
+### 2\. SecurityTrails (`ST_API_KEY`)
+
+-   **Link:** <https://securitytrails.com/app/account/credentials>
+
+-   **How to find it:** Once you sign up and log in, navigate to your account settings and click on the "API Credentials" tab to view or generate your key.
+
+* * * * *
+
+### 3\. Censys
+
+Censys recently transitioned their API authentication. Instead of the legacy ID and Secret pair (`CENSYS_API_ID` & `CENSYS_API_SECRET`), they now use a single **Personal Access Token (PAT)**.
+
+**How to generate your Censys PAT:**
+
+1.  Log in to your Censys account.
+
+2.  Click your profile icon in the top right corner and select **API Access** (or navigate to **My Account** > **Personal Access Tokens**).
+
+3.  Click **Create New Token**.
+
+4.  Enter a name for your token and click **Create**.
+
+5.  **Copy the token immediately.** Keep it secure, as you will not be able to view the token value again once you close the dialog box.
+
+**How to set it up in your tool:**
+
+-   **Updated Tools:** If your OSINT tool has been updated for the new Censys Platform API, it will likely ask for a single key (e.g., `CENSYS_API_KEY` or `CENSYS_TOKEN`). Simply paste your new PAT there. *(Note: If you have a paid account, some integrations also require you to input your Organization ID alongside the PAT).*
+
+-   **Legacy Tools:** Because your tool specifically asks for `CENSYS_API_ID` and `CENSYS_API_SECRET`, it is built for the old Legacy Search API. Pasting your new PAT into these old fields will likely cause an authentication error. If this happens, you will need to check if the tool's developer has released an update to support the new Censys authentication method.
 
 ## Quick Start
 
@@ -55,6 +100,9 @@ python main.py -t example.com --shodan-key KEY --deep --copyright "© MyCompany"
 
 # Debug mode with verbose logging
 python main.py -t example.com --debug
+ 
+# Use Censys Platform API PAT (preferred) instead of id/secret
+python main.py -t example.com --censys-pat YOUR_PAT --censys-org YOUR_ORG_ID
 ```
 
 ## API Keys
@@ -63,7 +111,7 @@ python main.py -t example.com --debug
 |--------|-----|------|--------|
 | **Shodan** | `--shodan-key` | Student plan | High — SSL cert pivot |
 | **SecurityTrails** | `--st-key` | Free tier | High — historical DNS |
-| **Censys** | `--censys-id/secret` | Free tier | Medium — cert data |
+| **Censys** | `--censys-pat` (preferred) or legacy `--censys-id/secret` | Free/paid tiers | Medium — cert data (PAT supports Platform API with optional org ID) |
 
 You can also use environment variables or a `.env` file (see above):
 
@@ -74,6 +122,10 @@ python main.py -t example.com
 ```
 
 If an API key or optional library is not available, that module will be skipped and the tool will continue using other sources.
+
+Notes on Censys Platform API and rate limits:
+- Prefer using a Censys Personal Access Token (PAT) via `--censys-pat` or `CENSYS_API_PAT` in your `.env` file. If you have an organization, set `--censys-org` or `CENSYS_ORG_ID`.
+- Free accounts have limited endpoints and low rate limits; Starter/Enterprise tiers increase data access and concurrent actions. The tool implements retry/backoff for rate-limited responses.
 
 ## Modules
 
