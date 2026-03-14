@@ -146,7 +146,6 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
 
         elif imap_host and imap_user and imap_pass:
             # Fetch via IMAP in thread to avoid blocking
-            import asyncio
             loop = asyncio.get_event_loop()
             try:
                 raw = loop.run_in_executor(None, fetch_headers_via_imap, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, 3)
