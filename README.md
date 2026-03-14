@@ -101,6 +101,9 @@ python main.py -t example.com --shodan-key KEY --deep --copyright "© MyCompany"
 # Debug mode with verbose logging
 python main.py -t example.com --debug
  
+# Run all available discovery modules (best-effort). Missing API keys or services will be skipped.
+python main.py -t example.com --all
+
 # Use Censys Platform API PAT (preferred) instead of id/secret
 python main.py -t example.com --censys-pat YOUR_PAT --censys-org YOUR_ORG_ID
 ```

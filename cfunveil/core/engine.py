@@ -105,34 +105,73 @@ class ReconEngine:
             ))
             self.console.print(f"    [dim]Found {len(cert_results.get('ips', []))} IPs from cert data[/dim]")
 
-            # ── Module 3: Shodan Pivot ───────────────────────────────
+            # Prepare tasks for Shodan and Historical. In --no-wait mode we'll start them
+            # concurrently and print an interim summary before awaiting their completion.
+            shodan = None
+            shodan_task = None
             if self.config.get("shodan_key"):
-                self.console.print("[bold green][3/6][/bold green] Shodan Intelligence Pivot...")
                 shodan = ShodanPivot(
                     self.target, self.root_domain, self.config, self.console
                 )
-                shodan_results = await shodan.run()
 
-                for ip, meta in shodan_results.get("ips", {}).items():
-                    self._add_ip(ip, "Shodan", meta)
-                self.console.print(
-                    f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]"
-                )
-            else:
-                self.console.print("[bold yellow][3/6][/bold yellow] Shodan — [dim]skipped (no API key)[/dim]")
+            self.console.print("[bold green][3/6][/bold green] Shodan Intelligence Pivot...")
 
-            # ── Module 4: Historical Sources ─────────────────────────
             self.console.print("[bold green][4/6][/bold green] Historical DNS & Passive Sources...")
             historical = HistoricalSources(
                 self.root_domain, self.config, self.console, session
             )
-            hist_results = await historical.run()
 
-            for ip in hist_results.get("ips", []):
-                self._add_ip(ip, "Historical-DNS")
-            self.console.print(
-                f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
-            )
+            if self.config.get("no_wait"):
+                # Start long-running tasks concurrently
+                tasks = []
+                if shodan:
+                    shodan_task = asyncio.create_task(shodan.run())
+                    tasks.append(shodan_task)
+                hist_task = asyncio.create_task(historical.run())
+                tasks.append(hist_task)
+
+                # Print interim summary while these run
+                self.console.print("    [dim]Interim summary (continuing long scans in background)...[/dim]")
+                self.console.print(f"    [dim]IPs discovered so far: {len(self.discovered_ips)}[/dim]")
+
+                # Collect results as tasks finish, ensure we don't skip any results
+                for finished in asyncio.as_completed(tasks):
+                    try:
+                        res = await finished
+                    except Exception as e:
+                        self.console.print(f"    [dim yellow]A background module failed: {e}[/dim yellow]")
+                        continue
+
+                    # Identify which task finished
+                    if finished is shodan_task:
+                        shodan_results = res or {}
+                        for ip, meta in shodan_results.get("ips", {}).items():
+                            self._add_ip(ip, "Shodan", meta)
+                        self.console.print(f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]")
+                    else:
+                        hist_results = res or {}
+                        for ip in hist_results.get("ips", []):
+                            self._add_ip(ip, "Historical-DNS")
+                        self.console.print(f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]")
+
+            else:
+                # Blocking (original) behavior
+                if shodan:
+                    shodan_results = await shodan.run()
+                    for ip, meta in shodan_results.get("ips", {}).items():
+                        self._add_ip(ip, "Shodan", meta)
+                    self.console.print(
+                        f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]"
+                    )
+                else:
+                    self.console.print("[bold yellow][3/6][/bold yellow] Shodan — [dim]skipped (no API key)[/dim]")
+
+                hist_results = await historical.run()
+                for ip in hist_results.get("ips", []):
+                    self._add_ip(ip, "Historical-DNS")
+                self.console.print(
+                    f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
+                )
 
             # ── Module 5: ASN Intelligence ──────────────────────────
             self.console.print("[bold green][5/6][/bold green] ASN & BGP Intelligence...")

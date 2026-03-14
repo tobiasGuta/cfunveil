@@ -37,6 +37,8 @@ console = Console()
 @click.option("--cf-asns", default=None, help="Comma-separated list of Cloudflare ASNs to ignore (overrides built-in list)")
 @click.option("--validate-concurrency", default=10, show_default=True, help="Concurrent origin validation probes")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
+@click.option("--all", "-a", is_flag=True, default=False, help="Run all available discovery modules (best-effort)")
+@click.option("--no-wait", is_flag=True, default=False, help="Print interim results early and continue long scans in background")
 @click.option("--email-headers-file", default=None, help="Path to raw email headers file to extract IPs from")
 @click.option("--imap-host", default=None, help="IMAP host to fetch email headers from (optional)")
 @click.option("--imap-user", default=None, help="IMAP username (optional)")
@@ -48,7 +50,7 @@ console = Console()
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
-def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, output, no_validate, deep, quiet):
+def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -89,7 +91,15 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, threads, timeout,
         "cf_asns": ([a.strip() for a in (cf_asns or "").split(",") if a.strip()] if cf_asns else None),
         "validation_concurrency": validate_concurrency,
         "debug": debug,
+        "all": all,
+        "no_wait": no_wait,
     }
+
+    # If --all is specified, enable deep scanning and validation by default.
+    if config.get("all"):
+        config["deep"] = True
+        config["validate"] = True
+        console.print("[dim][*] Running in --all mode: enabling deep scans and validation (best-effort)[/dim]")
 
     # Configure logging
     import logging
