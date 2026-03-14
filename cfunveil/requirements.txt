@@ -1,0 +1,11 @@
+# cfunveil dependencies
+# For reproducible CI installs prefer the pinned lockfile: requirements-lock.txt
+aiohttp>=3.9.0
+aiodns>=3.1.0
+shodan>=1.28.0
+click>=8.1.0
+rich>=13.7.0
+cloudscraper>=1.2.58
+mmh3>=3.1.1
+beautifulsoup4>=4.12.2
+python-dotenv>=1.0.0
