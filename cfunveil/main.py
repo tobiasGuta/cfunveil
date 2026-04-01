@@ -44,7 +44,6 @@ console = Console()
 @click.option("--email-headers-file", default=None, help="Path to raw email headers file to extract IPs from")
 @click.option("--imap-host", default=None, help="IMAP host to fetch email headers from (optional)")
 @click.option("--imap-user", default=None, help="IMAP username (optional)")
-@click.option("--imap-pass", default=None, help="IMAP password (optional)")
 @click.option("--imap-mailbox", default='INBOX', help="IMAP mailbox (default INBOX)")
 @click.option("--imap-ssl/--no-imap-ssl", default=True, help="Use SSL for IMAP connection")
 @click.option("--copyright", default=None, help="Optional copyright/unique string to search for via Shodan/Censys")
@@ -52,7 +51,9 @@ console = Console()
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
-def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose):
+@click.option("--resume", is_flag=True, default=False, help="Resume previous scan session if exists")
+@click.option("--no-wildcards", is_flag=True, default=False, help="Filter out wildcard certificates")
+def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose, resume, no_wildcards):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -65,6 +66,15 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
       cfunveil -t api.example.com --shodan-key KEY --deep --output report.json
       cfunveil -t example.com --shodan-key KEY --st-key KEY2 -T 100
     """
+    import os
+    if imap_host:
+        imap_pass = os.environ.get("IMAP_PASS")
+        if not imap_pass:
+            import getpass
+            imap_pass = getpass.getpass("IMAP Password: ")
+    else:
+        imap_pass = None
+
     if not quiet:
         print_banner(console)
 
@@ -76,12 +86,23 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
 
     console.print(f"\n[bold cyan][>>] Target:[/bold cyan] [bold white]{target}[/bold white]")
     console.print(f"[dim]    Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
+        if no_validate and threads >= 50:
+            console.print("[yellow][!] Warning: High thread count with --no-validate may trip rate limits on external APIs or alert defenders.[/yellow]")
+
+
 
     # Sanity-check numeric options
     if threads is None or int(threads) < 1:
         threads = 1
     if timeout is None or float(timeout) <= 0:
         timeout = 8
+
+
+    session_file = f"cfunveil_{target.replace('.', '_')}_session.json"
+    import os
+    if not resume and os.path.exists(session_file):
+        if click.confirm(f"[!] Found existing session file '{session_file}'. Do you want to resume?", default=True):
+            resume = True
 
     config = {
         "target": target,
@@ -101,6 +122,8 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
         "debug": debug,
         "all": all,
         "no_wait": no_wait,
+        "resume": resume,
+        "no_wildcards": no_wildcards,
     }
 
     # If --all is specified, enable deep scanning and validation by default.

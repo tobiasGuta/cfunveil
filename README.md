@@ -1,11 +1,16 @@
 # cfunveil
 
-CloudFlare Origin IP Discovery Tool for Bug Bounty Hunters
+**CloudFlare Origin IP Discovery Tool for Bug Bounty Hunters and Security Researchers**
 
-Chains several intelligence modules to uncover origin IPs hidden behind CloudFlare and similar reverse proxies.
+The core purpose of `cfunveil` is to accurately uncover real origin IP addresses hidden behind reverse proxies and CDNs (Content Delivery Networks) like Cloudflare. It chains together multiple OSINT and active reconnaissance modules—such as SSL Certificate Transparency logs, historical DNS records, Shodan pivoting, and autonomous ASN intelligence—to map out potential origins. A probabilistic validation engine then actively probes those IPs to determine a confidence score based on TLS matches, HTTP response fingerprints, and other correlating signals. This significantly reduces the noise typical in origin discovery and enables researchers to perform direct infrastructure assessments bypassing WAF protections.
 
 ## What's New (April 2026)
 
+- **Session Persistence & Resume**: For large, long-running scans that get interrupted, `cfunveil` now automatically persists state to a session file (e.g., `cfunveil_target_com_session.json`). Use `--resume` or accept the interactive prompt to pick up exactly where the scan was aborted, skipping completed intelligence modules.
+- **Secure IMAP Handling**: Removed the insecure `--imap-pass` plaintext CLI parameter to prevent credential leakage in shell histories. IMAP passwords are now handled securely via an interactive `getpass` prompt or the `IMAP_PASS` environment variable.
+- **Wildcard Certificate Filtering**: Added the `--no-wildcards` flag to explicitly filter out wildcard (`*.target.com`) SSL certificates from crt.sh and Censys modules. This prevents inflating false positive rates caused by generic SAN matches.
+- **Shared Hosting / Subnet Warnings**: The analysis engine now detects when a grouped `/24` subnet cluster contains IPs belonging to multiple different Autonomous Systems or ISPs (e.g. DigitalOcean vs. Linode mixed). If this occurs, it emits an "Unreliable Cluster" warning to alert researchers that it may just be shared hosting rather than dedicated infrastructure.
+- **Rate Limit Safeguards**: Implemented a built-in safety warning when executing aggressive unvalidated scans (e.g., combining `--no-validate` with `>= 50` threads) which might trip partner API rate limits or alert target defenders.
 - **Probabilistic Scoring Engine v2**: Bounded confidence scoring (0.0 to 1.0) with category limits for more accurate origin detection.
 - **Tiering & Ranking**: Results are now categorized into High (>= 80%), Medium (50-79%), and Low (< 50%) confidence tiers.
 - **Diversity Clustering & Deduplication**: Intelligently groups closely related IPs (same /24 subnet, identical TLS fingerprints, or identical HTTP response hashes) to reduce noise.
@@ -116,8 +121,15 @@ python main.py -t example.com --shodan-key KEY --no-validate -T 100
 # Extract IPs from a saved raw email headers file and include them in the scan
 python main.py -t example.com --email-headers-file ./headers.txt
 
-# Fetch recent headers via IMAP (use with care; provide credentials)
-python main.py -t example.com --imap-host imap.example.com --imap-user me --imap-pass secret
+# Fetch recent headers via IMAP (use with care; provide credentials interactively)
+python main.py -t example.com --imap-host imap.example.com --imap-user me
+# (Or pass password securely via env var: IMAP_PASS=secret python main.py ...)
+
+# Resume an interrupted scan
+python main.py -t example.com --resume
+
+# Filter out wildcard certificates and perform a full scan
+python main.py -t example.com --all --no-wildcards
 
 # Search for sites that include a unique copyright string (Shodan deep scan)
 python main.py -t example.com --shodan-key KEY --deep --copyright "© MyCompany"

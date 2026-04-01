@@ -3,6 +3,8 @@ core/engine.py - Main orchestration engine
 Runs all modules concurrently and aggregates results
 """
 
+import json
+import os
 import asyncio
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -18,6 +20,31 @@ class ReconEngine:
         self.config = config
         self.console = console
         self.target = config["target"]
+        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session.json"
+        
+        self.completed_modules = set()
+        self.subdomains = set()
+        if self.config.get("resume") and os.path.exists(self.session_file):
+            try:
+                with open(self.session_file, "r") as f:
+                    state = json.load(f)
+                    self.discovered_ips = state.get("discovered_ips", {})
+                    self.completed_modules = set(state.get("completed_modules", []))
+                    self.subdomains = set(state.get("subdomains", []))
+                self.console.print(f"[bold green][+] Resumed session from {self.session_file} ({len(self.completed_modules)} modules completed)[/bold green]")
+            except Exception as e:
+                self.console.print(f"[yellow][!] Failed to load session file: {e}[/yellow]")
+
+    def _save_session(self):
+        state = {
+            "discovered_ips": self.discovered_ips,
+            "completed_modules": list(self.completed_modules),
+            "subdomains": list(self.subdomains)
+        }
+        try:
+            with open(self.session_file, "w") as f:
+                json.dump(state, f)
+        except: pass
         # Extract root domain from subdomain
         parts = self.target.split(".")
         self.root_domain = ".".join(parts[-2:]) if len(parts) > 2 else self.target
@@ -83,31 +110,41 @@ class ReconEngine:
                 self._add_ip(ip, "Email-Header")
 
             # ── Module 1: DNS Enumeration ─────────────────────────────
-            self.console.print("[bold green][1/6][/bold green] DNS Enumeration & Subdomain Harvest...")
-            from core.dns_enum import DNSEnumerator
-            dns_enum = DNSEnumerator(self.target, self.root_domain, self.console)
-            dns_results = await dns_enum.run()
+            if 'dns' not in self.completed_modules:
+                self.console.print("[bold green][1/6][/bold green] DNS Enumeration & Subdomain Harvest...")
+                from core.dns_enum import DNSEnumerator
+                dns_enum = DNSEnumerator(self.target, self.root_domain, self.console)
+                dns_results = await dns_enum.run()
 
-            for ip in dns_results.get("ips", []):
-                self._add_ip(ip, "DNS")
-            results["subdomains"] = dns_results.get("subdomains", [])
-            self.console.print(f"    [dim]Found {len(dns_results.get('ips', []))} IPs, "
-                               f"{len(dns_results.get('subdomains', []))} subdomains[/dim]")
+                for ip in dns_results.get("ips", []):
+                    self._add_ip(ip, "DNS")
+                self.subdomains.update(dns_results.get("subdomains", []))
+                self.console.print(f"    [dim]Found {len(dns_results.get('ips', []))} IPs, "
+                                   f"{len(dns_results.get('subdomains', []))} subdomains[/dim]")
+                self.completed_modules.add('dns')
+                self._save_session()
+            else:
+                self.console.print("[dim][1/6] DNS Enumeration (Skipped - restored from session)[/dim]")
+            results["subdomains"] = list(self.subdomains)
 
             # ── Module 2: SSL Certificate Intelligence ───────────────
-            self.console.print("[bold green][2/6][/bold green] SSL Certificate Transparency (crt.sh + Censys)...")
-            from core.cert_intel import CertIntelligence
-            cert_intel = CertIntelligence(
-                self.root_domain, self.config, self.console, session
-            )
-            cert_results = await cert_intel.run()
+            if 'ssl' not in self.completed_modules:
+                self.console.print("[bold green][2/6][/bold green] SSL Certificate Transparency (crt.sh + Censys)...")
+                from core.cert_intel import CertIntelligence
+                cert_intel = CertIntelligence(
+                    self.root_domain, self.config, self.console, session
+                )
+                cert_results = await cert_intel.run()
 
-            for ip in cert_results.get("ips", []):
-                self._add_ip(ip, "SSL-Cert")
-            results["subdomains"] = list(set(
-                results["subdomains"] + cert_results.get("subdomains", [])
-            ))
-            self.console.print(f"    [dim]Found {len(cert_results.get('ips', []))} IPs from cert data[/dim]")
+                for ip in cert_results.get("ips", []):
+                    self._add_ip(ip, "SSL-Cert")
+                self.subdomains.update(cert_results.get("subdomains", []))
+                self.console.print(f"    [dim]Found {len(cert_results.get('ips', []))} IPs from cert data[/dim]")
+                self.completed_modules.add('ssl')
+                self._save_session()
+            else:
+                self.console.print("[dim][2/6] SSL Certificate Intelligence (Skipped - restored from session)[/dim]")
+            results["subdomains"] = list(self.subdomains)
 
             # Prepare tasks for Shodan and Historical. In --no-wait mode we'll start them
             # concurrently and print an interim summary before awaiting their completion.

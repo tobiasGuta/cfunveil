@@ -92,6 +92,17 @@ def cluster_and_rank_ips(validated_ips: Dict[str, Any]) -> Dict[str, Any]:
         if item["confidence"] > clusters[cluster_id]["max_confidence"]:
             clusters[cluster_id]["max_confidence"] = item["confidence"]
             clusters[cluster_id]["tier"] = item["tier"]
+            
+    # Check for unreliable subnet clusters (shared hosting warning)
+    for c_id, c_data in clusters.items():
+        if c_id.startswith("subnet:"):
+            orgs = set()
+            for m in c_data["members"]:
+                org = m.get("org", m.get("isp", "Unknown"))
+                if org:
+                    orgs.add(org)
+            if len(orgs) > 1:
+                c_data["warning"] = "Unreliable /24 cluster: Multiple organizations detected (shared hosting)."
 
     # Select Top Candidates (Diverse)
     # Pick the best member from the top clusters until we have up to 10

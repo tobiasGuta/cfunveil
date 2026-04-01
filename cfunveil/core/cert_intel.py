@@ -25,8 +25,9 @@ class CertIntelligence:
     async def run(self) -> dict:
         tasks = [
             self._query_crtsh(),
-            self._query_crtsh_alt(),       # Second query with wildcard
         ]
+        if not self.config.get('no_wildcards'):
+            tasks.append(self._query_crtsh_alt())
 
         if self.config.get("censys_id") and self.config.get("censys_secret"):
             tasks.append(self._query_censys())
@@ -54,7 +55,10 @@ class CertIntelligence:
             for cert in certs:
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
-                    entry = entry.strip().lstrip("*.")
+                    entry = entry.strip()
+                    if self.config.get("no_wildcards") and entry.startswith("*."):
+                        continue
+                    entry = entry.lstrip("*.")
                     if entry and self.root_domain in entry:
                         self.found_subdomains.add(entry)
                     # Sometimes IPs appear directly in cert SANs
@@ -79,7 +83,10 @@ class CertIntelligence:
                 issuer = cert.get("issuer_name", "")
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
-                    entry = entry.strip().lstrip("*.")
+                    entry = entry.strip()
+                    if self.config.get("no_wildcards") and entry.startswith("*."):
+                        continue
+                    entry = entry.lstrip("*.")
                     if entry and self.root_domain in entry:
                         self.found_subdomains.add(entry)
 
@@ -119,6 +126,8 @@ class CertIntelligence:
                         names = names or hit.get("names") or []
                         for name in names:
                             if self.root_domain in name:
+                                if self.config.get("no_wildcards") and name.startswith("*."):
+                                    continue
                                 self.found_subdomains.add(name.lstrip("*."))
 
                     self.console.print(f"    [dim]Censys (Platform API): {len(hits)} cert results[/dim]")

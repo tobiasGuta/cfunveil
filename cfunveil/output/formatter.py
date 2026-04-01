@@ -168,6 +168,9 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
             server = m_list[0].get("server_header", "")[:20]
             summary = cluster["name"]
             
+            if "warning" in cluster:
+                summary += f"\n[yellow]⚠ {cluster['warning']}[/yellow]"
+            
         if tier == "Low":
             tier_str = f"[dim]{tier_str}[/dim]"
             conf_str = f"[dim]{conf_str}[/dim]"
