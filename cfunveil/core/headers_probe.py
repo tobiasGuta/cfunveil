@@ -84,13 +84,30 @@ class HeadersProbe:
 
                     # Try to read a small chunk of body to find domain references
                     body_preview = ""
+                    body_length = 0
+                    body_hash = ""
                     try:
                         body = await asyncio.wait_for(resp.read(), timeout=3)
+                        body_length = len(body)
+                        import hashlib
+                        body_hash = hashlib.md5(body).hexdigest()
+                        
                         body_text = body[:2000].decode("utf-8", errors="ignore")
                         # Check if domain appears in body (strong indicator)
                         body_preview = body_text[:500]
                     except Exception as e:
                         self.logger.debug("Error reading body from %s: %s", url, e)
+
+                    # Capture redirect chain
+                    redirect_chain = []
+                    if getattr(resp, 'history', None):
+                        for prev_resp in resp.history:
+                            redirect_chain.append({
+                                "status": prev_resp.status,
+                                "url": str(prev_resp.url),
+                                "location": prev_resp.headers.get("Location", ""),
+                                "server": prev_resp.headers.get("Server", "")
+                            })
 
                     result = {
                         "ip": ip,
@@ -98,11 +115,14 @@ class HeadersProbe:
                         "scheme": scheme,
                         "port": p,
                         "status": resp.status,
+                        "redirect_chain": redirect_chain,
                         "is_cloudflare": is_cf,
                         "is_waf": is_waf,
                         "headers": interesting,
                         "all_headers": dict(resp_headers),
                         "body_preview": body_preview,
+                        "body_length": body_length,
+                        "body_hash": body_hash,
                         "server": resp_headers.get("server", ""),
                         "content_type": resp_headers.get("content-type", ""),
                         "domain_in_body": domain in body_preview,

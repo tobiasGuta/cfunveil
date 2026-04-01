@@ -52,14 +52,24 @@ def confirmed_badge(confirmed: bool) -> str:
     return "[bold green]✓ CONFIRMED[/bold green]" if confirmed else "[dim]unconfirmed[/dim]"
 
 
-def print_summary(results: dict, console: Console):
+from output.analysis import cluster_and_rank_ips
+
+from output.analysis import cluster_and_rank_ips
+
+def print_summary(results: dict, console: Console, verbose: bool = False):
     console.print()
-    console.rule("[bold cyan]RESULTS[/bold cyan]")
+    console.rule("[bold cyan]RESULTS (v2 Model)[/bold cyan]")
     console.print()
 
     ips = results.get("ips", {})
-    confirmed_origins = results.get("validated_origins", [])
     subdomains = results.get("subdomains", [])
+
+    analysis = results.get("analysis", cluster_and_rank_ips(ips))
+    ranked_ips = analysis["all_ranked"]
+    top_candidates = analysis["top_candidates"]
+    clusters = analysis["clusters"]
+
+    confirmed_origins = [ip["ip"] for ip in ranked_ips if ip["tier"] == "High"]
 
     # ── Stats row ─────────────────────────────────────────────────────
     stats = Table.grid(padding=(0, 4))
@@ -69,9 +79,9 @@ def print_summary(results: dict, console: Console):
     stats.add_column()
     stats.add_row(
         f"[bold cyan]IPs Found[/bold cyan]\n[bold white]{len(ips)}[/bold white]",
-        f"[bold green]Origins Confirmed[/bold green]\n[bold white]{len(confirmed_origins)}[/bold white]",
+        f"[bold green]High Confidence[/bold green]\n[bold white]{len(confirmed_origins)}[/bold white]",
         f"[bold yellow]Subdomains[/bold yellow]\n[bold white]{len(subdomains)}[/bold white]",
-        f"[bold magenta]Sources Used[/bold magenta]\n[bold white]{len(results.get('summary', {}).get('sources_used', []))}[/bold white]",
+        f"[bold magenta]Identified Clusters[/bold magenta]\n[bold white]{len(clusters)}[/bold white]"
     )
     console.print(Panel(stats, border_style="dim"))
 
@@ -79,28 +89,49 @@ def print_summary(results: dict, console: Console):
         console.print("\n[yellow][!] No IPs discovered. Try --deep or add more API keys.[/yellow]")
         return
 
-    # ── Confirmed Origins (highlight) ────────────────────────────────
-    if confirmed_origins:
-        console.print(f"\n[bold green]✓ CONFIRMED ORIGIN IP(S)[/bold green]")
-        for ip in confirmed_origins:
-            data = ips.get(ip, {})
+    # ── Top Candidates (highlight) ────────────────────────────────
+    if top_candidates:
+        console.print(f"\n[bold green]★ TOP CANDIDATES ({len(top_candidates)})[/bold green]")
+        for data in top_candidates:
+            ip = data["ip"]
             conf = data.get("confidence", 0)
+            conf_pct = int(conf * 100)
+            tier = data.get("tier", "Low")
+            tier_color = "bold green" if tier == "High" else ("yellow" if tier == "Medium" else "dim")
             org = data.get("org", "Unknown org")
-            country = data.get("country", "")
             sources = ", ".join(data.get("sources", []))
-
-            console.print(Panel(
+            
+            justif = data.get("justification", "Legacy scoring applied")
+            
+            panel_text = (
                 f"[bold white]{ip}[/bold white]   "
-                f"[{confidence_color(conf)}]{conf}% confidence[/{confidence_color(conf)}]\n"
-                f"[dim]Org:[/dim] {org}  [dim]Country:[/dim] {country}\n"
-                f"[dim]Discovered via:[/dim] {sources}\n"
-                f"[dim]Evidence:[/dim] {' · '.join(data.get('evidence', []))}",
-                border_style="green",
-                padding=(0, 1),
-            ))
+                f"[{tier_color}]{tier} Tier ({conf_pct}%)[/{tier_color}]\n"
+                f"[dim]Org:[/dim] {org}  [dim]Sources:[/dim] {sources}\n"
+                f"[bold cyan]Signals:[/bold cyan] {justif}\n"
+            )
+            
+            if verbose and "explanation" in data:
+                exp = data["explanation"]
+                if exp:
+                    panel_text += "\n[bold]Verbose Breakdown:[/bold]\n"
+                    cats = ", ".join([f"{k}:{v}" for k, v in exp.get("category_breakdown", {}).items()])
+                    panel_text += f"[dim]Categories:[/dim] {cats}\n"
+                    for f in exp.get("contributing_factors", []):
+                        panel_text += f"  • {f}\n"
+            else:
+                exp = data.get("explanation", {}) or {}
+                factors = exp.get("contributing_factors", [])
+                if factors:
+                    panel_text += "\n[bold]Key Factors:[/bold]\n"
+                    for f in factors[:3]:
+                        panel_text += f"  • {f}\n"
+                    if len(factors) > 3:
+                        panel_text += f"  [dim]• ... and {len(factors) - 3} more[/dim]\n"
+            
+            console.print(Panel(panel_text, border_style="cyan" if tier == "High" else "magenta", padding=(0, 1)))
 
     # ── Full IP Table ─────────────────────────────────────────────────
-    console.print(f"\n[bold]All Discovered IPs[/bold]")
+    console.print(f"\n[bold]All Discovered Components ({len(clusters)} clusters)[/bold]")
 
     table = Table(
         box=box.ROUNDED,
@@ -109,77 +140,60 @@ def print_summary(results: dict, console: Console):
         border_style="dim",
         expand=False,
     )
-    table.add_column("IP Address", style="bold white", min_width=16)
-    table.add_column("Confidence", justify="center", min_width=12)
-    table.add_column("Status", justify="center")
-    table.add_column("Org / ISP", max_width=30)
-    table.add_column("Sources")
+    table.add_column("Tier", min_width=8)
+    table.add_column("Score", justify="center")
+    table.add_column("IP / Cluster", style="bold white", min_width=20)
     table.add_column("Server")
+    table.add_column("Summary")
 
-    # Sort by confidence descending
-    sorted_ips = sorted(
-        ips.items(),
-        key=lambda x: x[1].get("confidence", 0),
-        reverse=True
-    )
+    for cluster in clusters:
+        tier = cluster["tier"]
+        tier_color = "bold green" if tier == "High" else ("yellow" if tier == "Medium" else "dim")
+        conf = cluster["max_confidence"]
+        conf_pct = int(conf * 100)
+        
+        tier_str = f"[{tier_color}]{tier}[/{tier_color}]"
+        conf_str = f"[{tier_color}]{conf_pct}%[/{tier_color}]"
+        
+        m_list = cluster["members"]
+        if len(m_list) == 1:
+            m = m_list[0]
+            ip_str = m["ip"]
+            server = m.get("server_header", "")[:20]
+            summary = m.get("org", m.get("isp", ""))[:30]
+        else:
+            first_ip = m_list[0]["ip"]
+            extra = len(m_list) - 1
+            ip_str = f"{first_ip} [dim](+{extra} in {cluster['name']})[/dim]"
+            server = m_list[0].get("server_header", "")[:20]
+            summary = cluster["name"]
+            
+        if tier == "Low":
+            tier_str = f"[dim]{tier_str}[/dim]"
+            conf_str = f"[dim]{conf_str}[/dim]"
+            ip_str = f"[dim]{ip_str}[/dim]"
+            server = f"[dim]{server}[/dim]"
+            summary = f"[dim]{summary}[/dim]"
 
-    for ip, data in sorted_ips:
-        conf = data.get("confidence", 0)
-        confirmed = data.get("confirmed", False)
-        org = data.get("org", data.get("isp", "Unknown"))[:28]
-        sources = ", ".join(data.get("sources", []))[:30]
-        server = data.get("server_header", "")[:20]
-        http_status = data.get("http_status", "")
-        status_str = f"HTTP {http_status}" if http_status else "—"
-
-        conf_str = f"[{confidence_color(conf)}]{conf}%[/{confidence_color(conf)}]"
-        confirmed_str = "[bold green]✓[/bold green]" if confirmed else "[dim]·[/dim]"
-
-        table.add_row(ip, conf_str, status_str, org, sources, server)
+        table.add_row(tier_str, conf_str, ip_str, server, summary)
 
     console.print(table)
 
-    # ── Subdomains found ─────────────────────────────────────────────
-    if subdomains:
-        console.print(f"\n[bold]Notable Subdomains Found ({len(subdomains)} total)[/bold]")
-        # Show top 20 most interesting
-        shown = subdomains[:20]
-        cols = [f"[cyan]{s}[/cyan]" for s in shown]
-        console.print("  " + "  |  ".join(cols[:10]))
-        if len(cols) > 10:
-            console.print("  " + "  |  ".join(cols[10:20]))
-        if len(subdomains) > 20:
-            console.print(f"  [dim]... and {len(subdomains) - 20} more[/dim]")
-
-    # ── Shodan detail for confirmed IPs ──────────────────────────────
-    for ip in confirmed_origins:
-        data = ips.get(ip, {})
-        shodan_data = data.get("shodan_data", {})
-        vulns = data.get("vulns", [])
-        ports = data.get("ports", [])
-
-        if ports or vulns:
-            console.print(f"\n[bold yellow]Shodan Detail: {ip}[/bold yellow]")
-            if ports:
-                console.print(f"  [dim]Open ports:[/dim] {', '.join(map(str, ports[:15]))}")
-            if vulns:
-                console.print(f"  [bold red]CVEs:[/bold red] {', '.join(vulns[:10])}")
-
-    # ── Next steps ───────────────────────────────────────────────────
-    if confirmed_origins:
-        console.print()
-        console.rule("[bold yellow]NEXT STEPS[/bold yellow]")
-        ip = confirmed_origins[0]
-        console.print(f"""
+    if top_candidates:
+        highs = [c for c in top_candidates if c["tier"] == "High"]
+        if highs:
+            console.print()
+            console.rule("[bold yellow]NEXT STEPS[/bold yellow]")
+            ip = highs[0]["ip"]
+            target = results.get("target", "target.com")
+            v = f"""
 [bold white]1. Direct bypass test:[/bold white]
-   [cyan]curl -sk -H "Host: {results['target']}" https://{ip}/ | head -50[/cyan]
+   [cyan]curl -sk -H "Host: {target}" https://{ip}/ | head -50[/cyan]
 
 [bold white]2. Full port scan:[/bold white]
    [cyan]nmap -sV -p- --open {ip}[/cyan]
 
 [bold white]3. Directory bruteforce on origin:[/bold white]
-   [cyan]ffuf -u https://{ip}/FUZZ -H "Host: {results['target']}" -w wordlist.txt[/cyan]
-
-[bold white]4. Check if WAF is bypassable:[/bold white]
-   [cyan]curl -sk -H "Host: {results['target']}" -H "X-Forwarded-For: 127.0.0.1" https://{ip}/admin[/cyan]
-""")
+   [cyan]ffuf -u https://{ip}/FUZZ -H "Host: {target}" -w wordlist.txt[/cyan]
+"""
+            console.print(v)

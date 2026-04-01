@@ -1,3 +1,4 @@
+from output.analysis import cluster_and_rank_ips
 #!/usr/bin/env python3
 """
 cfunveil - CloudFlare Origin IP Discovery Tool
@@ -37,6 +38,7 @@ console = Console()
 @click.option("--cf-asns", default=None, help="Comma-separated list of Cloudflare ASNs to ignore (overrides built-in list)")
 @click.option("--validate-concurrency", default=10, show_default=True, help="Concurrent origin validation probes")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Enable verbose explaining")
 @click.option("--all", "-a", is_flag=True, default=False, help="Run all available discovery modules (best-effort)")
 @click.option("--no-wait", is_flag=True, default=False, help="Print interim results early and continue long scans in background")
 @click.option("--email-headers-file", default=None, help="Path to raw email headers file to extract IPs from")
@@ -50,7 +52,7 @@ console = Console()
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
-def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet):
+def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_pass, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -170,8 +172,13 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
     try:
         engine = ReconEngine(config, console)
         results = asyncio.run(engine.run())
+        
+        # Inject clustering and ranking analysis into results
+        if "ips" in results:
+            analysis_data = cluster_and_rank_ips(results["ips"])
+            results["analysis"] = analysis_data
 
-        print_summary(results, console)
+        print_summary(results, console, verbose=verbose)
 
         if output:
             generate_report(results, output, target)

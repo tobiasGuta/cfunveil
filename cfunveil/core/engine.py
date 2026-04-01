@@ -119,7 +119,19 @@ class ReconEngine:
                     self.target, self.root_domain, self.config, self.console
                 )
 
-            self.console.print("[bold green][3/6][/bold green] Shodan Intelligence Pivot...")
+            fofa = None
+            fofa_task = None
+            if self.config.get("fofa_email") and self.config.get("fofa_key"):
+                from core.osint_pivot import FOFAPivot
+                fofa = FOFAPivot(self.target, self.root_domain, self.config, self.console, session)
+
+            zoomeye = None
+            zoomeye_task = None
+            if self.config.get("zoomeye_key"):
+                from core.osint_pivot import ZoomEyePivot
+                zoomeye = ZoomEyePivot(self.target, self.root_domain, self.config, self.console, session)
+
+            self.console.print("[bold green][3/6][/bold green] Shodan & OSINT Intelligence Pivot...")
 
             self.console.print("[bold green][4/6][/bold green] Historical DNS & Passive Sources...")
             from core.historical import HistoricalSources
@@ -133,6 +145,12 @@ class ReconEngine:
                 if shodan:
                     shodan_task = asyncio.create_task(shodan.run())
                     tasks.append(shodan_task)
+                if fofa:
+                    fofa_task = asyncio.create_task(fofa.run())
+                    tasks.append(fofa_task)
+                if zoomeye:
+                    zoomeye_task = asyncio.create_task(zoomeye.run())
+                    tasks.append(zoomeye_task)
                 hist_task = asyncio.create_task(historical.run())
                 tasks.append(hist_task)
 
@@ -154,10 +172,24 @@ class ReconEngine:
                         for ip, meta in shodan_results.get("ips", {}).items():
                             self._add_ip(ip, "Shodan", meta)
                         self.console.print(f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]")
-                    else:
+                    elif finished is fofa_task:
+                        fofa_results = res or {}
+                        for ip, meta in fofa_results.get("ips", {}).items():
+                            self._add_ip(ip, "FOFA", meta)
+                        self.console.print(f"    [dim]FOFA returned {len(fofa_results.get('ips', {}))} IPs[/dim]")
+                    elif finished is zoomeye_task:
+                        zoomeye_results = res or {}
+                        for ip, meta in zoomeye_results.get("ips", {}).items():
+                            self._add_ip(ip, "ZoomEye", meta)
+                        self.console.print(f"    [dim]ZoomEye returned {len(zoomeye_results.get('ips', {}))} IPs[/dim]")
+                    elif finished is hist_task:
                         hist_results = res or {}
-                        for ip in hist_results.get("ips", []):
-                            self._add_ip(ip, "Historical-DNS")
+                        if isinstance(hist_results.get("ips"), dict):
+                            for ip, meta in hist_results.get("ips", {}).items():
+                                self._add_ip(ip, "Historical-DNS", meta)
+                        else:
+                            for ip in hist_results.get("ips", []):
+                                self._add_ip(ip, "Historical-DNS")
                         self.console.print(f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]")
 
             else:
@@ -172,9 +204,25 @@ class ReconEngine:
                 else:
                     self.console.print("[bold yellow][3/6][/bold yellow] Shodan — [dim]skipped (no API key)[/dim]")
 
+                if fofa:
+                    fofa_results = await fofa.run()
+                    for ip, meta in fofa_results.get("ips", {}).items():
+                        self._add_ip(ip, "FOFA", meta)
+                    self.console.print(f"    [dim]FOFA returned {len(fofa_results.get('ips', {}))} IPs[/dim]")
+
+                if zoomeye:
+                    zoomeye_results = await zoomeye.run()
+                    for ip, meta in zoomeye_results.get("ips", {}).items():
+                        self._add_ip(ip, "ZoomEye", meta)
+                    self.console.print(f"    [dim]ZoomEye returned {len(zoomeye_results.get('ips', {}))} IPs[/dim]")
+
                 hist_results = await historical.run()
-                for ip in hist_results.get("ips", []):
-                    self._add_ip(ip, "Historical-DNS")
+                if isinstance(hist_results.get("ips"), dict):
+                    for ip, meta in hist_results.get("ips", {}).items():
+                        self._add_ip(ip, "Historical-DNS", meta)
+                else:
+                    for ip in hist_results.get("ips", []):
+                        self._add_ip(ip, "Historical-DNS")
                 self.console.print(
                     f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
                 )

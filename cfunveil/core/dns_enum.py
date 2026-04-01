@@ -92,6 +92,28 @@ class DNSEnumerator:
             tasks.append(self._query(resolver, fqdn, "CNAME"))
 
         await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 3. Nameserver Consistency Checks
+        # Identify subdomains with delegated NS records that differ from the root domain.
+        root_ns_records = set()
+        try:
+            root_ns_res = await resolver.query(self.root_domain, "NS")
+            for r in root_ns_res:
+                root_ns_records.add(r.host.rstrip("."))
+        except Exception:
+            pass
+
+        self.ns_anomalies = []
+        if root_ns_records:
+            ns_tasks = [self._check_subdomain_ns(resolver, sub, root_ns_records) 
+                        for sub in list(self.found_subdomains) 
+                        if sub != self.root_domain and sub.endswith(self.root_domain)]
+            if ns_tasks:
+                await asyncio.gather(*ns_tasks, return_exceptions=True)
+                
+        if self.ns_anomalies:
+            for sub, ns_list in self.ns_anomalies:
+                self.console.print(f"    [dim yellow]NS Divergence:[/dim yellow] {sub} uses {ns_list} (differs from root NS)")
 
         # Filter out CloudFlare IPs
         real_ips = {ip for ip in self.found_ips if not is_cloudflare_ip(ip)}
@@ -104,7 +126,20 @@ class DNSEnumerator:
             "ips": list(real_ips),
             "subdomains": list(self.found_subdomains),
             "cloudflare_ips": list(cf_ips),
+            "ns_anomalies": self.ns_anomalies,
         }
+
+    async def _check_subdomain_ns(self, resolver, subdomain, root_ns):
+        try:
+            res = await resolver.query(subdomain, "NS")
+            sub_ns = set(r.host.rstrip(".") for r in res)
+            if sub_ns and not sub_ns.issubset(root_ns):
+                self.ns_anomalies.append((subdomain, list(sub_ns)))
+                # Resolve these anomalous nameservers to IPs (they might host the origin)
+                for ns in sub_ns:
+                    await self._query(resolver, ns, "A")
+        except Exception:
+            pass
 
     async def _query(self, resolver: aiodns.DNSResolver, domain: str, rtype: str):
         try:
@@ -123,6 +158,11 @@ class DNSEnumerator:
                     self.found_subdomains.add(mx_host)
                     # Try to resolve MX host
                     await self._query(resolver, mx_host, "A")
+                    
+                    # Also try to resolve the /24 around MX? 
+                    # Not doing it immediately here because we need the IP first.
+                    # It will be caught if resolving MX adds an IP. We can let the ASN/BGP step expand it,
+                    # or just rely on the A record we just submitted.
 
             elif rtype == "NS":
                 for r in result:
@@ -131,11 +171,37 @@ class DNSEnumerator:
 
             elif rtype == "TXT":
                 for r in result:
-                    text = str(r.text)
+                    text_data = str(r.text)
                     # SPF records often contain real IPs: "ip4:1.2.3.4"
-                    ips = extract_ips_from_text(text)
+                    ips = extract_ips_from_text(text_data)
                     for ip in ips:
                         self.found_ips.add(ip)
+                    
+                    # SPF CIDR expansion
+                    if "v=spf1" in text_data:
+                        import ipaddress
+                        # Extract ip4: and ip6: CIDRs
+                        import re
+                        cidrs = re.findall(r'ip[46]:([^ ]+)', text_data)
+                        for cidr in cidrs:
+                            try:
+                                net = ipaddress.ip_network(cidr, strict=False)
+                                # Basic expansion, limit to /24 or smaller to avoid exploding
+                                if net.num_addresses <= 256:
+                                    for host in net.hosts():
+                                        self.found_ips.add(str(host))
+                                elif net.num_addresses > 256:
+                                    # Pick just a few as samples or add network identifier
+                                    self.found_ips.add(str(net[1]))
+                                    self.found_ips.add(str(net[-2]))
+                            except Exception:
+                                pass
+                        
+                        # Note: 'include:' recursion would require firing another DNS query
+                        includes = re.findall(r'include:([^ ]+)', text_data)
+                        for inc in includes:
+                            asyncio.create_task(self._query(resolver, inc, "TXT"))
+                            
 
             elif rtype == "CNAME":
                 for r in result:

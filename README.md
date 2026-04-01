@@ -4,8 +4,13 @@ CloudFlare Origin IP Discovery Tool for Bug Bounty Hunters
 
 Chains several intelligence modules to uncover origin IPs hidden behind CloudFlare and similar reverse proxies.
 
-## What's New (2026-03-14)
+## What's New (April 2026)
 
+- **Probabilistic Scoring Engine v2**: Bounded confidence scoring (0.0 to 1.0) with category limits for more accurate origin detection.
+- **Tiering & Ranking**: Results are now categorized into High (>= 80%), Medium (50-79%), and Low (< 50%) confidence tiers.
+- **Diversity Clustering & Deduplication**: Intelligently groups closely related IPs (same /24 subnet, identical TLS fingerprints, or identical HTTP response hashes) to reduce noise.
+- **Explainability Layer**: Added a `--verbose` flag to display human-readable justifications and detailed category breakdowns for why an IP is considered an origin.
+- **Enhanced JSON/HTML Export**: The structured export now natively includes the full analysis object containing deduplicated clusters, top candidates, and scoring justifications.
 - Added support for Censys Platform PAT via `--censys-pat` and optional `--censys-org` CLI options.
 - Improved IP validation to support both IPv4 and IPv6 addresses.
 - More robust dependency handling: missing optional libraries (`shodan`, `aiodns`, `aiohttp`) now produce actionable messages and are lazily imported so the tool can be imported without every optional dependency installed.
@@ -102,6 +107,9 @@ python main.py -t example.com \
 # Deep scan (more Shodan credits, more thorough)
 python main.py -t example.com --shodan-key KEY --deep
 
+# Verbose Explanations (show category breakdowns and detailed justifications)
+python main.py -t example.com --verbose
+
 # Fast scan without validation (enumerate only)
 python main.py -t example.com --shodan-key KEY --no-validate -T 100
 
@@ -179,12 +187,11 @@ python main.py -t example.com --shodan-key KEY --output report.html
 
 ## Confidence Scoring
 
-| Score | Meaning |
-|-------|---------|
-| 80-100% | Almost certainly the origin — direct bypass likely |
-| 60-79% | Likely origin — test manually |
-| 40-59% | Possible origin — worth investigating |
-| 0-39% | Low confidence — historical or unconfirmed |
+| Tier | Score Range | Meaning |
+|------|-------------|---------|
+| **High** | 80-100% | Almost certainly the origin — direct bypass likely with multiple correlating signals (e.g. TLS match + HTTP text) |
+| **Medium** | 50-79% | Likely origin or related infrastructure based on partial corroboration — test manually |
+| **Low** | 0-49% | Low confidence — historical, related ISPs, or unconfirmed noise |
 
 ![Screenshot](https://raw.githubusercontent.com/tobiasGuta/cfunveil/main/Screenshot%202026-03-14%20175345.png)
 

@@ -50,6 +50,7 @@ class ShodanPivot:
                 ("Headers fingerprint", self._headers_search, None),
                 ("ASN expansion", self._asn_search, None),
                 ("Copyright search", self._copyright_search, (self.config.get("copyright"),)),
+                ("JARM fingerprinting", self._jarm_search, None),
             ]
 
         for name, strategy, args in strategies:
@@ -101,6 +102,7 @@ class ShodanPivot:
                 "last_update": result.get("last_update"),
                 "product": result.get("product"),
                 "version": result.get("version"),
+                "jarm": result.get("ssl", {}).get("jarm") if isinstance(result.get("ssl"), dict) else None
             }
         }
 
@@ -275,6 +277,28 @@ class ShodanPivot:
                     self._add_result(match)
             except Exception:
                 pass
+
+    # ── Search Strategy 7: JARM Fingerprinting ───────────────────────
+    def _jarm_search(self):
+        """
+        Deep: Extract JARM hashes from already discovered origin IPs,
+        and find other non-CDN servers sharing the same TLS fingerprint.
+        """
+        jarm_hashes = set()
+        for data in self.found_ips.values():
+            jarm = data.get("shodan_data", {}).get("jarm")
+            if jarm and jarm != "00000000000000000000000000000000000000000000000000000000000000":
+                jarm_hashes.add(jarm)
+
+        for j_hash in list(jarm_hashes)[:3]: # Limit to 3 distinct JARMs
+            try:
+                # Require hostname to match or we'll get too much noise
+                query = f'ssl.jarm:{j_hash} hostname:"{self.root_domain}" -org:"Cloudflare"'
+                results = self.api.search(query, limit=50)
+                for match in results.get("matches", []):
+                    self._add_result(match)
+            except Exception as e:
+                self.logger.debug("JARM search failed for hash %s: %s", j_hash, e)
 
     # ── Shodan Host Info (detailed lookup for confirmed IPs) ─────────
     def get_host_detail(self, ip: str) -> dict:
