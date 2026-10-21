@@ -14,13 +14,37 @@ IP_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 
 class CertIntelligence:
-    def __init__(self, root_domain: str, config: dict, console: Console, session: aiohttp.ClientSession):
-        self.root_domain = root_domain
+    def __init__(self, root_domain: str, config: dict, console: Console, session: aiohttp.ClientSession, target: str | None = None):
+        self.root_domain = root_domain.rstrip(".").lower()
+        self.target = (target or root_domain).rstrip(".").lower()
         self.config = config
         self.console = console
         self.session = session
         self.found_ips: set[str] = set()
         self.found_subdomains: set[str] = set()
+        self.records: dict[str, list[dict]] = {}
+
+    def _matches_requested_scope(self, domain: str) -> bool:
+        domain = domain.rstrip(".").lower()
+        if self.target != self.root_domain:
+            return domain == self.target
+        return domain == self.root_domain or domain.endswith("." + self.root_domain)
+
+    def _matched_cert_hostname(self, name: str) -> str | None:
+        """Never turn a wildcard's suffix into an invented host observation.
+
+        Wildcard SANs are certificate scope, not proof of any IP. Resolve only
+        an exact requested hostname that would be covered by a one-label
+        wildcard; for root-domain scans, never enumerate wildcard children.
+        """
+        name = name.strip().rstrip(".").lower()
+        if name.startswith("*."):
+            if self.config.get("no_wildcards") or self.target == self.root_domain:
+                return None
+            suffix = name[2:]
+            prefix, sep, parent = self.target.partition(".")
+            return self.target if sep and parent == suffix else None
+        return name if self._matches_requested_scope(name) else None
 
     async def run(self) -> dict:
         tasks = [
@@ -29,7 +53,7 @@ class CertIntelligence:
         if not self.config.get('no_wildcards'):
             tasks.append(self._query_crtsh_alt())
 
-        if self.config.get("censys_id") and self.config.get("censys_secret"):
+        if self.config.get("censys_pat") or (self.config.get("censys_id") and self.config.get("censys_secret")):
             tasks.append(self._query_censys())
 
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -40,12 +64,13 @@ class CertIntelligence:
         return {
             "ips": list(self.found_ips),
             "subdomains": list(self.found_subdomains),
+            "records": self.records,
         }
 
     async def _query_crtsh(self):
         """Query crt.sh Certificate Transparency logs"""
         try:
-            url = f"https://crt.sh/?q={self.root_domain}&output=json"
+            url = f"https://crt.sh/?q={self.target}&output=json"
             from core.utils import http_get_with_retry
             resp = await http_get_with_retry(self.session, url, attempts=3, timeout=20)
             if not resp or resp.status != 200:
@@ -56,14 +81,9 @@ class CertIntelligence:
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
                     entry = entry.strip()
-                    if self.config.get("no_wildcards") and entry.startswith("*."):
-                        continue
-                    entry = entry.lstrip("*.")
-                    if entry and self.root_domain in entry:
-                        self.found_subdomains.add(entry)
-                    # Sometimes IPs appear directly in cert SANs
-                    ips = IP_REGEX.findall(entry)
-                    self.found_ips.update(ips)
+                    matched = self._matched_cert_hostname(entry)
+                    if matched:
+                        self.found_subdomains.add(matched)
 
             self.console.print(f"    [dim]crt.sh: {len(certs)} certificates found[/dim]")
 
@@ -73,7 +93,7 @@ class CertIntelligence:
     async def _query_crtsh_alt(self):
         """Query crt.sh for exact subdomain"""
         try:
-            url = f"https://crt.sh/?q=%.{self.root_domain}&output=json"
+            url = f"https://crt.sh/?q=%.{self.target}&output=json"
             async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
                 if resp.status != 200:
                     return
@@ -84,11 +104,9 @@ class CertIntelligence:
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
                     entry = entry.strip()
-                    if self.config.get("no_wildcards") and entry.startswith("*."):
-                        continue
-                    entry = entry.lstrip("*.")
-                    if entry and self.root_domain in entry:
-                        self.found_subdomains.add(entry)
+                    matched = self._matched_cert_hostname(entry)
+                    if matched:
+                        self.found_subdomains.add(matched)
 
         except Exception:
             pass
@@ -112,7 +130,7 @@ class CertIntelligence:
                 if org:
                     headers["X-Organization-ID"] = org
 
-                body = {"query": f"parsed.names: {self.root_domain}", "page": 1, "per_page": 100}
+                body = {"query": f"parsed.names: {self.target}", "page": 1, "per_page": 100}
                 from core.utils import http_post_with_retry
                 resp = await http_post_with_retry(self.session, url, json_body=body, headers=headers, attempts=3, timeout=15)
                 if resp and resp.status == 200:
@@ -125,10 +143,9 @@ class CertIntelligence:
                             names = parsed.get("names", [])
                         names = names or hit.get("names") or []
                         for name in names:
-                            if self.root_domain in name:
-                                if self.config.get("no_wildcards") and name.startswith("*."):
-                                    continue
-                                self.found_subdomains.add(name.lstrip("*."))
+                            matched = self._matched_cert_hostname(name)
+                            if matched:
+                                self.found_subdomains.add(matched)
 
                     self.console.print(f"    [dim]Censys (Platform API): {len(hits)} cert results[/dim]")
                     return
@@ -142,7 +159,7 @@ class CertIntelligence:
 
                 headers = {"Authorization": f"Basic {auth}"}
                 url = "https://search.censys.io/api/v2/certificates/search"
-                params = {"q": f"parsed.names: {self.root_domain}", "per_page": 100}
+                params = {"q": f"parsed.names: {self.target}", "per_page": 100}
                 from core.utils import http_get_with_retry
                 resp = await http_get_with_retry(self.session, url, headers=headers, params=params, attempts=3, timeout=15)
                 if not resp or resp.status != 200:
@@ -153,8 +170,9 @@ class CertIntelligence:
                 for hit in hits:
                     names = hit.get("parsed", {}).get("names", [])
                     for name in names:
-                        if self.root_domain in name:
-                            self.found_subdomains.add(name.lstrip("*."))
+                        matched = self._matched_cert_hostname(name)
+                        if matched:
+                            self.found_subdomains.add(matched)
 
                 self.console.print(f"    [dim]Censys (legacy): {len(hits)} cert hits[/dim]")
 
@@ -171,6 +189,10 @@ class CertIntelligence:
                 result = await resolver.query(sub, "A")
                 for r in result:
                     self.found_ips.add(r.host)
+                    record = {"domain": sub, "record_type": "cert-hostname-DNS-A"}
+                    data = self.records.setdefault(r.host, [])
+                    if record not in data:
+                        data.append(record)
             except Exception:
                 pass
 

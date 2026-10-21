@@ -1,16 +1,12 @@
-"""
-output/reporter.py - Report generation
-Exports findings as JSON or styled HTML report
-"""
-
+"""Export evidence without treating a ranking score as a bypass claim."""
+import html
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 def generate_report(results: dict, output_path: str, target: str):
     path = Path(output_path)
-
     if path.suffix.lower() == ".html":
         _generate_html(results, output_path, target)
     else:
@@ -18,133 +14,105 @@ def generate_report(results: dict, output_path: str, target: str):
 
 
 def _generate_json(results: dict, output_path: str):
-    # Clean up non-serializable fields
-    clean = json.loads(json.dumps(results, default=str))
-    with open(output_path, "w") as f:
-        json.dump(clean, f, indent=2)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, default=str)
+
+
+def _html(value):
+    return html.escape(str(value), quote=True)
 
 
 def _generate_html(results: dict, output_path: str, target: str):
     ips = results.get("ips", {})
-    confirmed = results.get("validated_origins", [])
-    subdomains = results.get("subdomains", [])
     summary = results.get("summary", {})
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def conf_color(score):
-        if score >= 80: return "#22c55e"
-        if score >= 60: return "#84cc16"
-        if score >= 40: return "#eab308"
-        if score >= 20: return "#f97316"
-        return "#ef4444"
-
-    ip_rows = ""
-    for ip, data in sorted(ips.items(), key=lambda x: x[1].get("confidence", 0), reverse=True):
-        conf = data.get("confidence", 0)
-        color = conf_color(conf)
-        is_confirmed = data.get("confirmed", False)
-        badge = '<span class="badge confirmed">✓ ORIGIN</span>' if is_confirmed else ""
-        evidence = " · ".join(data.get("evidence", []))
-        ports = ", ".join(map(str, data.get("ports", [])[:10])) or "—"
-        vulns = data.get("vulns", [])
-        vuln_html = (
-            f'<span style="color:#ef4444">⚠ {len(vulns)} CVEs: {", ".join(vulns[:5])}</span>'
-            if vulns else "—"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    verified = sum(bool(data.get("confirmed")) for data in ips.values())
+    rows = []
+    for ip, data in sorted(
+        ips.items(), key=lambda item: item[1].get("confidence", 0), reverse=True
+    ):
+        score = max(0.0, min(1.0, float(data.get("confidence", 0))))
+        evidence = data.get("evidence", [])
+        warnings = data.get("warnings", [])
+        fields = [
+            ip,
+            f"{score * 100:.0f}/100",
+            data.get("verification_status", "not_tested"),
+            data.get("evidence_status", "unclassified"),
+            data.get("http_status", "—"),
+            ", ".join(data.get("sources", [])),
+        ]
+        cells = "".join(f"<td>{_html(value)}</td>" for value in fields)
+        details = "; ".join(str(x) for x in evidence + warnings) or "No verification evidence"
+        rows.append(
+            f"<tr>{cells}</tr><tr class='details'><td colspan='6'>{_html(details)}</td></tr>"
         )
-        ip_rows += f"""
-        <tr class="{'origin-row' if is_confirmed else ''}">
-            <td><code>{ip}</code> {badge}</td>
-            <td><span style="color:{color};font-weight:bold">{conf}%</span></td>
-            <td>{data.get('http_status', '—')}</td>
-            <td>{data.get('org', data.get('isp', '—'))[:40]}</td>
-            <td>{data.get('country', '—')}</td>
-            <td>{", ".join(data.get("sources", []))}</td>
-            <td>{ports}</td>
-            <td>{vuln_html}</td>
-        </tr>
-        <tr class="evidence-row">
-            <td colspan="8" style="font-size:0.8em;color:#94a3b8;padding:4px 12px 8px">
-                {evidence if evidence else 'No evidence collected'}
-            </td>
-        </tr>"""
 
-    sub_html = "".join(f'<span class="subdomain">{s}</span>' for s in subdomains[:50])
+    def related_table(title, evidence):
+        if not evidence:
+            return ""
+        entries = []
+        for ip, data in sorted(evidence.items()):
+            domain_names = sorted({
+                str(record.get("domain", ""))
+                for record in data.get("records", [])
+                if record.get("domain")
+            })
+            entries.append(
+                "<tr><td>" + _html(ip) + "</td><td>"
+                + _html(", ".join(domain_names) or "No specific hostname")
+                + "</td><td>"
+                + _html(", ".join(data.get("sources", [])))
+                + "</td></tr>"
+            )
+        return (
+            "<h2>" + _html(title) + " (" + str(len(evidence)) + ")</h2>"
+            "<table><thead><tr><th>IP address</th><th>Associated hostnames</th>"
+            "<th>Evidence sources</th></tr></thead><tbody>"
+            + "".join(entries) + "</tbody></table>"
+        )
 
-    html = f"""<!DOCTYPE html>
-<html>
+    secondary_sections = (
+        related_table("Observed CDN edge IPs, not origin leads", results.get("cdn_edges", {}))
+        + related_table(
+            "Related infrastructure, not origin leads",
+            results.get("related_infrastructure", {}),
+        )
+    )
+
+    page = """<!doctype html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>cfunveil — {target}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CFUnveil origin verification</title>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', monospace; padding: 32px; }}
-  h1 {{ color: #38bdf8; font-size: 2em; margin-bottom: 4px; }}
-  h2 {{ color: #94a3b8; font-weight: 400; margin-bottom: 24px; font-size: 0.95em; }}
-  h3 {{ color: #7dd3fc; margin: 32px 0 12px; font-size: 1.1em; }}
-  .stats {{ display: flex; gap: 16px; margin: 24px 0; }}
-  .stat {{ background: #1e293b; padding: 16px 24px; border-radius: 8px; border: 1px solid #334155; min-width: 120px; }}
-  .stat-val {{ font-size: 2em; font-weight: bold; color: #38bdf8; }}
-  .stat-lbl {{ font-size: 0.8em; color: #94a3b8; margin-top: 4px; }}
-  .confirmed-box {{ background: #052e16; border: 1px solid #16a34a; border-radius: 8px; padding: 16px; margin: 8px 0; }}
-  .confirmed-box code {{ color: #4ade80; font-size: 1.2em; font-weight: bold; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 0.88em; }}
-  th {{ background: #1e293b; padding: 10px 12px; text-align: left; color: #7dd3fc; border-bottom: 1px solid #334155; }}
-  td {{ padding: 8px 12px; border-bottom: 1px solid #1e293b; vertical-align: top; }}
-  tr:hover td {{ background: #1e293b44; }}
-  .origin-row td {{ background: #052e1620; }}
-  .evidence-row td {{ background: transparent !important; }}
-  .badge {{ font-size: 0.75em; padding: 2px 8px; border-radius: 99px; font-weight: bold; margin-left: 8px; }}
-  .badge.confirmed {{ background: #15803d; color: #bbf7d0; }}
-  .subdomain {{ display: inline-block; background: #1e293b; color: #94a3b8; font-size: 0.8em;
-               padding: 3px 8px; margin: 3px; border-radius: 4px; font-family: monospace; }}
-  .cmd-block {{ background: #1e293b; border-left: 3px solid #38bdf8; padding: 12px 16px;
-                border-radius: 4px; font-family: monospace; font-size: 0.88em; margin: 8px 0; color: #7dd3fc; }}
-  footer {{ margin-top: 48px; color: #475569; font-size: 0.8em; text-align: center; }}
+body{font-family:system-ui,sans-serif;background:#101823;color:#e8eef5;margin:2rem auto;max-width:1100px;padding:0 1rem}
+h1{color:#7dd3fc}p{line-height:1.5}table{border-collapse:collapse;width:100%}
+td,th{padding:.8rem;border-bottom:1px solid #344252;text-align:left;overflow-wrap:anywhere}
+th{color:#7dd3fc}.details{color:#b5c1cf;font-size:.86rem}.note{border-left:3px solid #7dd3fc;padding:.8rem 1rem;background:#1c2938}
 </style>
 </head>
 <body>
-<h1>cfunveil</h1>
-<h2>CloudFlare Origin Discovery Report · {target} · {timestamp}</h2>
-
-<div class="stats">
-  <div class="stat"><div class="stat-val">{summary.get('total_ips_found', 0)}</div><div class="stat-lbl">IPs Discovered</div></div>
-  <div class="stat"><div class="stat-val" style="color:#4ade80">{summary.get('confirmed_origins', 0)}</div><div class="stat-lbl">Confirmed Origins</div></div>
-  <div class="stat"><div class="stat-val">{summary.get('total_subdomains', 0)}</div><div class="stat-lbl">Subdomains</div></div>
-  <div class="stat"><div class="stat-val">{len(summary.get('sources_used', []))}</div><div class="stat-lbl">Sources Used</div></div>
-</div>
-
-{'<h3>✓ Confirmed Origin IPs</h3>' + ''.join(f"""
-<div class="confirmed-box">
-  <code>{ip}</code>
-  <span style="color:#4ade80;font-size:0.9em"> · {ips.get(ip, {}).get('confidence', 0)}% confidence</span><br>
-  <span style="color:#94a3b8;font-size:0.85em">{ips.get(ip, {}).get('org', '')} · {ips.get(ip, {}).get('country', '')}</span><br>
-  <span style="color:#64748b;font-size:0.8em">{' · '.join(ips.get(ip, {}).get('evidence', []))}</span>
-</div>""" for ip in confirmed) if confirmed else '<p style="color:#94a3b8">No confirmed origins found.</p>'}
-
-<h3>All Discovered IPs</h3>
+<h1>CFUnveil — Origin verification evidence</h1>
+<p>Target: <strong>__TARGET__</strong> · UTC: __TIME__</p>
+<p>Discovered IPs: __TOTAL__ · Verified direct application matches: __VERIFIED__</p>
+<p class="note">A ranking score is a heuristic, not a probability. A verified direct
+application match does not by itself establish WAF bypass, impact, or permission to
+test the IP. Check the program's IP scope before performing any further testing.</p>
 <table>
-  <thead>
-    <tr>
-      <th>IP Address</th><th>Confidence</th><th>HTTP</th>
-      <th>Organization</th><th>Country</th><th>Sources</th>
-      <th>Open Ports</th><th>CVEs</th>
-    </tr>
-  </thead>
-  <tbody>{ip_rows}</tbody>
+<thead><tr><th>IP address</th><th>Ranking score</th><th>Verification</th><th>Discovery evidence</th><th>HTTP</th><th>Discovery sources</th></tr></thead>
+<tbody>__ROWS__</tbody>
 </table>
-
-{'<h3>Subdomains Found</h3><div style="margin:8px 0">' + sub_html + ('...' if len(subdomains) > 50 else '') + '</div>' if subdomains else ''}
-
-<h3>Next Steps</h3>
-{''.join(f'<div class="cmd-block">curl -sk -H "Host: {target}" https://{ip}/ | head -50</div>' for ip in confirmed) if confirmed else ''}
-<div class="cmd-block">nmap -sV -p- --open {confirmed[0] if confirmed else '&lt;ip&gt;'}</div>
-<div class="cmd-block">ffuf -u https://{confirmed[0] if confirmed else '&lt;ip&gt;'}/FUZZ -H "Host: {target}" -w wordlist.txt</div>
-
-<footer>
-  Generated by cfunveil · For authorized bug bounty research only · {timestamp}
-</footer>
-</body>
-</html>"""
-
-    with open(output_path, "w") as f:
-        f.write(html)
+__SECONDARY_SECTIONS__
+</body></html>"""
+    page = (
+        page.replace("__TARGET__", _html(target))
+        .replace("__TIME__", _html(now))
+        .replace("__TOTAL__", str(summary.get("total_ips_found", len(ips))))
+        .replace("__VERIFIED__", str(verified))
+        .replace("__ROWS__", "".join(rows))
+        .replace("__SECONDARY_SECTIONS__", secondary_sections)
+    )
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(page)

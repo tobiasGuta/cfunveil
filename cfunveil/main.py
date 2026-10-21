@@ -1,5 +1,5 @@
-from output.analysis import cluster_and_rank_ips
 #!/usr/bin/env python3
+from output.analysis import cluster_and_rank_ips
 """
 cfunveil - CloudFlare Origin IP Discovery Tool
 Bug Bounty Recon Tool | Use only on authorized targets
@@ -34,7 +34,7 @@ console = Console()
 @click.option("--censys-org", envvar="CENSYS_API_ORG_ID", help="Censys Organization ID (optional)")
 @click.option("--threads", "-T", default=50, show_default=True, help="Concurrent async tasks")
 @click.option("--timeout", default=8, show_default=True, help="Request timeout in seconds")
-@click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for HTTP requests")
+@click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for passive-source requests only; requires --no-validate")
 @click.option("--cf-asns", default=None, help="Comma-separated list of Cloudflare ASNs to ignore (overrides built-in list)")
 @click.option("--validate-concurrency", default=10, show_default=True, help="Concurrent origin validation probes")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
@@ -49,11 +49,12 @@ console = Console()
 @click.option("--copyright", default=None, help="Optional copyright/unique string to search for via Shodan/Censys")
 @click.option("--output", "-o", default=None, help="Save report to file (.json or .html)")
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
+@click.option("--authorized-cidr", multiple=True, help="IP/CIDR explicitly authorized for direct-origin validation; repeat per range")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
 @click.option("--resume", is_flag=True, default=False, help="Resume previous scan session if exists")
 @click.option("--no-wildcards", is_flag=True, default=False, help="Filter out wildcard certificates")
-def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose, resume, no_wildcards):
+def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose, resume, no_wildcards, authorized_cidr):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -86,10 +87,17 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
 
     console.print(f"\n[bold cyan][>>] Target:[/bold cyan] [bold white]{target}[/bold white]")
     console.print(f"[dim]    Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/dim]\n")
-        if no_validate and threads >= 50:
-            console.print("[yellow][!] Warning: High thread count with --no-validate may trip rate limits on external APIs or alert defenders.[/yellow]")
+    if no_validate and threads >= 50:
+        console.print("[yellow][!] Warning: High thread count with --no-validate may trip rate limits on external APIs or alert defenders.[/yellow]")
 
 
+
+    if insecure and not no_validate:
+        raise click.BadParameter(
+            "--insecure requires --no-validate; a verified TLS baseline "
+            "is mandatory for active origin validation",
+            param_hint="--insecure",
+        )
 
     # Sanity-check numeric options
     if threads is None or int(threads) < 1:
@@ -98,7 +106,7 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
         timeout = 8
 
 
-    session_file = f"cfunveil_{target.replace('.', '_')}_session.json"
+    session_file = f"cfunveil_{target.lower().rstrip('.').replace('.', '_')}_session_v6.json"
     import os
     if not resume and os.path.exists(session_file):
         if click.confirm(f"[!] Found existing session file '{session_file}'. Do you want to resume?", default=True):
@@ -124,13 +132,25 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
         "no_wait": no_wait,
         "resume": resume,
         "no_wildcards": no_wildcards,
+        "authorized_cidrs": authorized_cidr,
     }
 
-    # If --all is specified, enable deep scanning and validation by default.
+    # Direct-IP activity requires an explicit network scope; discovery remains passive without it.
+    import ipaddress
+    try:
+        for network in authorized_cidr:
+            parsed = ipaddress.ip_network(network, strict=False)
+            if not parsed.is_global:
+                raise ValueError("authorized CIDRs must contain only globally routable addresses")
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--authorized-cidr") from exc
+    if not authorized_cidr and not no_validate:
+        console.print("[yellow][!] Direct-IP validation disabled: provide explicit --authorized-cidr ranges permitted by the program.[/yellow]")
+
+    # --all enables deep discovery but must not override explicit --no-validate.
     if config.get("all"):
         config["deep"] = True
-        config["validate"] = True
-        console.print("[dim][*] Running in --all mode: enabling deep scans and validation (best-effort)[/dim]")
+        console.print("[dim][*] Running in --all mode: deep discovery enabled (best-effort)[/dim]")
 
     # Configure logging
     import logging

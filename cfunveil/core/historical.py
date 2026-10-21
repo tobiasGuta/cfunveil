@@ -12,8 +12,9 @@ IP_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 
 
 class HistoricalSources:
-    def __init__(self, root_domain: str, config: dict, console: Console, session: aiohttp.ClientSession):
-        self.root_domain = root_domain
+    def __init__(self, root_domain: str, config: dict, console: Console, session: aiohttp.ClientSession, target: str | None = None):
+        self.root_domain = root_domain.rstrip(".").lower()
+        self.target = (target or root_domain).rstrip(".").lower()
         self.config = config
         self.console = console
         self.session = session
@@ -23,7 +24,13 @@ class HistoricalSources:
         """Normalize and aggressively deduplicate historical records."""
         if not ip or not self._is_valid_ip(ip):
             return
-            
+        domain = (domain or "").rstrip(".").lower()
+        # The OSINT APIs can return embedded third-party resources (e.g.
+        # analytics and ads). They cannot become candidates for the queried host.
+        if not (domain == self.root_domain or domain.endswith("." + self.root_domain)):
+            return
+        relation = "exact_target" if domain == self.target else "related_hostname"
+        
         if ip not in self.found_ips:
             self.found_ips[ip] = {
                 "records": [],
@@ -37,7 +44,7 @@ class HistoricalSources:
             data["sources"].add(source)
             
         # Add record
-        record = {"domain": domain, "source": source}
+        record = {"domain": domain, "source": source, "relation": relation}
         if first_seen: record["first_seen"] = first_seen
         if last_seen: record["last_seen"] = last_seen
         
@@ -79,10 +86,9 @@ class HistoricalSources:
 
     async def run(self) -> dict:
         tasks = [
-            self._check_wayback(),
+            # Only hostname-attributed DNS evidence. Broad page scraping and
+            # archive pages do not supply trustworthy IP-to-host associations.
             self._query_hackertarget(),
-            self._query_viewdns(),
-            self._query_wayback(),
             self._query_threatcrowd(),
             self._query_urlscan(),
             self._query_rapiddns(),
@@ -217,7 +223,7 @@ class HistoricalSources:
                 ip = page.get("ip", "")
                 date = task.get("time", "")
                 if ip and IP_REGEX.match(ip):
-                    self._add_historical_ip(ip, page.get("domain", self.root_domain), "urlscan", first_seen=date, last_seen=date)
+                    self._add_historical_ip(ip, page.get("domain", ""), "urlscan", first_seen=date, last_seen=date)
 
             self.console.print(f"    [dim]urlscan.io: {len(results)} scan results[/dim]")
 
@@ -233,7 +239,9 @@ class HistoricalSources:
             }
 
             # Historical DNS records
-            url = f"https://api.securitytrails.com/v1/history/{self.root_domain}/dns/a"
+            # A request for a specific hostname must query that hostname's
+            # historical A records, not only the registrable-domain apex.
+            url = f"https://api.securitytrails.com/v1/history/{self.target}/dns/a"
             from core.utils import http_get_with_retry
             resp = await http_get_with_retry(self.session, url, headers=headers, attempts=3, timeout=10)
             if not resp or resp.status != 200:
@@ -245,7 +253,7 @@ class HistoricalSources:
                 for value in record.get("values", []):
                     ip = value.get("ip", "")
                     if ip:
-                        self._add_historical_ip(ip, self.root_domain, "securitytrails", first_seen=record.get("first_seen"), last_seen=record.get("last_seen"))
+                        self._add_historical_ip(ip, self.target, "securitytrails", first_seen=record.get("first_seen"), last_seen=record.get("last_seen"))
 
             self.console.print(f"    [dim]SecurityTrails: {len(records)} historical A records[/dim]")
 

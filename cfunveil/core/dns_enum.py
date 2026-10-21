@@ -48,177 +48,110 @@ LEAK_SUBDOMAINS = [
 RECORD_TYPES = ["A", "MX", "TXT", "NS", "AAAA", "SOA"]
 
 IP_REGEX = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-CLOUDFLARE_RANGES = [
-    "103.21.244.", "103.22.200.", "103.31.4.",
-    "104.16.", "104.17.", "104.18.", "104.19.", "104.20.", "104.21.", "104.22.",
-    "108.162.192.", "131.0.72.", "141.101.64.", "141.101.65.",
-    "162.158.", "172.64.", "172.65.", "172.66.", "172.67.",
-    "173.245.48.", "188.114.96.", "188.114.97.",
-    "190.93.240.", "197.234.240.", "198.41.128.", "198.41.129.",
-]
+
+# Source: Cloudflare's published IPv4/IPv6 network list (www.cloudflare.com/ips/).
+# Static, deterministic snapshot; avoids fragile string-prefix comparisons.
+import ipaddress
+
+CLOUDFLARE_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22",
+    "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18",
+    "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22",
+    "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32",
+    "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29",
+    "2c0f:f248::/32",
+))
 
 
 def is_cloudflare_ip(ip: str) -> bool:
-    return any(ip.startswith(prefix) for prefix in CLOUDFLARE_RANGES)
-
-
-def extract_ips_from_text(text: str) -> list[str]:
-    return IP_REGEX.findall(str(text))
+    try:
+        address = ipaddress.ip_address(ip)
+        return any(address in network for network in CLOUDFLARE_NETWORKS)
+    except ValueError:
+        return False
 
 
 class DNSEnumerator:
+    """Collect only hostname-address associations; TXT/MX/NS are not origins."""
+
     def __init__(self, target: str, root_domain: str, console: Console):
-        self.target = target
-        self.root_domain = root_domain
+        self.target = target.lower().rstrip(".")
+        self.root_domain = root_domain.lower().rstrip(".")
         self.console = console
         self.found_ips: set[str] = set()
         self.found_subdomains: set[str] = set()
+        self.records: dict[str, list[dict]] = {}
+        self.ns_anomalies: list = []
+
+    def _add_address(self, ip: str, domain: str, rtype: str):
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            return
+        if not address.is_global:
+            return
+        domain = domain.lower().rstrip(".")
+        self.found_ips.add(ip)
+        if domain == self.target or domain.endswith("." + self.root_domain):
+            self.found_subdomains.add(domain)
+        evidence = {"domain": domain, "record_type": rtype}
+        records = self.records.setdefault(ip, [])
+        if evidence not in records:
+            records.append(evidence)
 
     async def run(self) -> dict:
         resolver = aiodns.DNSResolver()
         resolver.nameservers = ["8.8.8.8", "1.1.1.1", "9.9.9.9"]
 
-        tasks = []
+        # When given a specific host, do not silently enumerate every sibling
+        # domain, mail host, SPF range, nameserver, and subdomain of the root.
+        targets = [self.target] if self.target != self.root_domain else [self.root_domain]
+        if self.target == self.root_domain:
+            targets += [f"{name}.{self.root_domain}" for name in LEAK_SUBDOMAINS]
 
-        # 1. Query all record types on the exact target + root domain
-        for domain in set([self.target, self.root_domain]):
-            for rtype in RECORD_TYPES:
-                tasks.append(self._query(resolver, domain, rtype))
-
-        # 2. Brute-force subdomain list
-        for sub in LEAK_SUBDOMAINS:
-            fqdn = f"{sub}.{self.root_domain}"
-            tasks.append(self._query(resolver, fqdn, "A"))
-            tasks.append(self._query(resolver, fqdn, "CNAME"))
-
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 3. Nameserver Consistency Checks
-        # Identify subdomains with delegated NS records that differ from the root domain.
-        root_ns_records = set()
-        try:
-            root_ns_res = await resolver.query(self.root_domain, "NS")
-            for r in root_ns_res:
-                root_ns_records.add(r.host.rstrip("."))
-        except Exception:
-            pass
-
-        self.ns_anomalies = []
-        if root_ns_records:
-            ns_tasks = [self._check_subdomain_ns(resolver, sub, root_ns_records) 
-                        for sub in list(self.found_subdomains) 
-                        if sub != self.root_domain and sub.endswith(self.root_domain)]
-            if ns_tasks:
-                await asyncio.gather(*ns_tasks, return_exceptions=True)
-                
-        if self.ns_anomalies:
-            for sub, ns_list in self.ns_anomalies:
-                self.console.print(f"    [dim yellow]NS Divergence:[/dim yellow] {sub} uses {ns_list} (differs from root NS)")
-
-        # Filter out CloudFlare IPs
-        real_ips = {ip for ip in self.found_ips if not is_cloudflare_ip(ip)}
-        cf_ips = {ip for ip in self.found_ips if is_cloudflare_ip(ip)}
-
-        if cf_ips:
-            self.console.print(f"    [dim]Filtered {len(cf_ips)} CloudFlare IP(s)[/dim]")
-
+        await asyncio.gather(
+            *(self._query(resolver, host, kind) for host in targets for kind in ("A", "AAAA", "CNAME")),
+            return_exceptions=True,
+        )
+        edges = {ip for ip in self.found_ips if is_cloudflare_ip(ip)}
+        if edges:
+            self.console.print(f"    [dim]Classified {len(edges)} Cloudflare edge IP(s)[/dim]")
         return {
-            "ips": list(real_ips),
-            "subdomains": list(self.found_subdomains),
-            "cloudflare_ips": list(cf_ips),
+            "ips": sorted(self.found_ips - edges),
+            "cloudflare_ips": sorted(edges),
+            "records": self.records,
+            "subdomains": sorted(self.found_subdomains),
             "ns_anomalies": self.ns_anomalies,
         }
 
-    async def _check_subdomain_ns(self, resolver, subdomain, root_ns):
+    async def _query(self, resolver, domain: str, kind: str):
         try:
-            res = await resolver.query(subdomain, "NS")
-            sub_ns = set(r.host.rstrip(".") for r in res)
-            if sub_ns and not sub_ns.issubset(root_ns):
-                self.ns_anomalies.append((subdomain, list(sub_ns)))
-                # Resolve these anomalous nameservers to IPs (they might host the origin)
-                for ns in sub_ns:
-                    await self._query(resolver, ns, "A")
+            response = await resolver.query(domain, kind)
+            if kind in ("A", "AAAA"):
+                for record in response:
+                    self._add_address(record.host, domain, kind)
+            elif kind == "CNAME":
+                # DNS alias targets are not automatically subdomains or origin IPs.
+                for record in response:
+                    destination = record.cname.rstrip(".").lower()
+                    if destination != domain:
+                        await self._query_alias(resolver, destination, domain)
         except Exception:
-            pass
+            # NXDOMAIN/no answer/timeouts are expected in DNS discovery.
+            return
 
-    async def _query(self, resolver: aiodns.DNSResolver, domain: str, rtype: str):
+    async def _query_alias(self, resolver, destination: str, original: str):
+        # Resolve at most one explicit alias hop. The evidence stays bound to the
+        # requested hostname; we never expand arbitrary zones from an alias.
         try:
-            result = await resolver.query(domain, rtype)
-
-            if rtype == "A":
-                for r in result:
-                    ip = r.host
-                    self.found_ips.add(ip)
-                    self.found_subdomains.add(domain)
-
-            elif rtype == "MX":
-                for r in result:
-                    # MX host might resolve to real IP
-                    mx_host = r.host.rstrip(".")
-                    self.found_subdomains.add(mx_host)
-                    # Try to resolve MX host
-                    await self._query(resolver, mx_host, "A")
-                    
-                    # Also try to resolve the /24 around MX? 
-                    # Not doing it immediately here because we need the IP first.
-                    # It will be caught if resolving MX adds an IP. We can let the ASN/BGP step expand it,
-                    # or just rely on the A record we just submitted.
-
-            elif rtype == "NS":
-                for r in result:
-                    ns_host = r.host.rstrip(".")
-                    self.found_subdomains.add(ns_host)
-
-            elif rtype == "TXT":
-                for r in result:
-                    text_data = str(r.text)
-                    # SPF records often contain real IPs: "ip4:1.2.3.4"
-                    ips = extract_ips_from_text(text_data)
-                    for ip in ips:
-                        self.found_ips.add(ip)
-                    
-                    # SPF CIDR expansion
-                    if "v=spf1" in text_data:
-                        import ipaddress
-                        # Extract ip4: and ip6: CIDRs
-                        import re
-                        cidrs = re.findall(r'ip[46]:([^ ]+)', text_data)
-                        for cidr in cidrs:
-                            try:
-                                net = ipaddress.ip_network(cidr, strict=False)
-                                # Basic expansion, limit to /24 or smaller to avoid exploding
-                                if net.num_addresses <= 256:
-                                    for host in net.hosts():
-                                        self.found_ips.add(str(host))
-                                elif net.num_addresses > 256:
-                                    # Pick just a few as samples or add network identifier
-                                    self.found_ips.add(str(net[1]))
-                                    self.found_ips.add(str(net[-2]))
-                            except Exception:
-                                pass
-                        
-                        # Note: 'include:' recursion would require firing another DNS query
-                        includes = re.findall(r'include:([^ ]+)', text_data)
-                        for inc in includes:
-                            asyncio.create_task(self._query(resolver, inc, "TXT"))
-                            
-
-            elif rtype == "CNAME":
-                for r in result:
-                    target = r.cname.rstrip(".")
-                    self.found_subdomains.add(target)
-                    # If CNAME doesn't point to CF, resolve it
-                    if "cloudflare" not in target:
-                        await self._query(resolver, target, "A")
-
-            elif rtype == "AAAA":
-                pass  # IPv6 — log but don't process for CF bypass
-
-            elif rtype == "SOA":
-                # SOA mname often leaks nameserver IP
-                mname = result.nsname.rstrip(".")
-                self.found_subdomains.add(mname)
-                await self._query(resolver, mname, "A")
-
+            for kind in ("A", "AAAA"):
+                try:
+                    response = await resolver.query(destination, kind)
+                    for record in response:
+                        self._add_address(record.host, original, "CNAME-" + kind)
+                except Exception:
+                    continue
         except Exception:
-            pass  # DNS NXDOMAIN, timeout etc — expected
+            return

@@ -1,342 +1,200 @@
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
-import asyncio
-from rich.console import Console
-
+"""Regression coverage for trust boundaries in direct-IP origin verification."""
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from rich.console import Console
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-PKG_DIR = os.path.join(ROOT, "cfunveil")
-if PKG_DIR not in sys.path:
-    sys.path.insert(0, PKG_DIR)
+sys.path.insert(0, os.path.join(ROOT, "cfunveil"))
 
+from core.headers_probe import HeadersProbe, is_public_ip
 from core.validator import OriginValidator
-from core.headers_probe import HeadersProbe
+
+
+def response(*, ip="8.8.8.8", tls=True, status=200, hash_value="sha",
+             cloudflare=False, size=400, redirect=None):
+    return {
+        "ip": ip, "connected_ip": ip, "peer_verified": True,
+        "status": status, "scheme": "https" if tls else "http",
+        "tls_verified": tls, "is_cloudflare": cloudflare,
+        "server": "nginx", "body_complete": True,
+        "body_length": size, "body_hash": hash_value,
+        "location": redirect,
+    }
+
 
 @pytest.fixture
 def validator():
-    console = Console()
-    session = AsyncMock()
-    val = OriginValidator("target.com", "target.com", console, session)
-    val.probe = AsyncMock(spec=HeadersProbe)
-    val.baseline = {}
-    return val
+    obj = OriginValidator(
+        "example.com", "example.com", Console(), MagicMock(),
+        authorized_cidrs=["8.8.8.8/32"],
+    )
+    obj.probe = MagicMock(spec=HeadersProbe)
+    obj.probe.probe = AsyncMock(return_value=response())
+    obj.probe.baseline = AsyncMock(return_value=response(ip=None))
+    obj.baseline = response(ip=None)
+    return obj
+
 
 @pytest.mark.asyncio
-async def test_scoring_cloudflare_proxy(validator):
-    """Scenario: Known CDN-fronted domain (should NOT resolve as origin)"""
-    validator.probe.probe.return_value = {
-        "status": 200,
-        "server": "cloudflare",
-        "headers": {"cf-ray": "xyz"},
-        "is_cloudflare": True,
-        "all_headers": {"cf-ray": "xyz"},
-        "redirect_chain": []
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    with patch("socket.socket") as mock_socket:
-        # Mock port 80 raw probe timeout
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("1.1.1.1", {})
-        
-    assert result["confirmed"] is False
-    assert result["confidence"] <= 0.01
-    assert "CloudFlare headers detected" in str(result["warnings"])
-
-@pytest.mark.asyncio
-async def test_scoring_direct_origin(validator):
-    """Scenario: Known direct-origin services (should resolve correctly)"""
-    validator.probe.probe.return_value = {
-        "status": 200,
-        "server": "nginx",
-        "headers": {"x-powered-by": "PHP"},
-        "is_cloudflare": False,
-        "domain_in_body": True,
-        "all_headers": {"x-powered-by": "PHP"},
-        "redirect_chain": []
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("2.2.2.2", {})
-        
+async def test_verified_exact_application_match(validator):
+    result = await validator.validate_ip("8.8.8.8", {"sources": ["Historical-DNS"]})
     assert result["confirmed"] is True
-    assert result["confidence"] >= 0.8
-    assert "No CloudFlare headers" in str(result["evidence"])
-    assert "Target domain found in response body" in str(result["evidence"])
+    assert result["application_match"] is True
+    assert result["verification_status"] == "verified_direct_application"
+    assert 0.8 <= result["confidence"] <= 1.0
+
 
 @pytest.mark.asyncio
-async def test_scoring_differential_match(validator):
-    """Scenario: Body hash match + redirect leak (Strong combinations pass)"""
-    validator.baseline = {
-        "body_length": 5000,
-        "body_hash": "deadbeef",
-        "custom_headers": {"x-target-id": "123"}
-    }
-    validator.probe.probe.return_value = {
-        "status": 302,
-        "server": "nginx",
-        "is_cloudflare": False,
-        "all_headers": {"x-target-id": "123"},
-        "body_length": 5000,
-        "body_hash": "deadbeef",
-        "redirect_chain": [
-            {"location": "http://3.3.3.3/"}
-        ]
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("3.3.3.3", {})
-        
-    assert result["confirmed"] is True
-    assert result["confidence"] >= 0.8
-    assert "Exact response body match with CDN fronted request (Differential)" in str(result["evidence"])
-    assert "Host redirected to itself via bare IP (Strong Origin Identifier)" in str(result["evidence"])
-
-@pytest.mark.asyncio
-async def test_scoring_noisy_ip(validator):
-    """Scenario: Noisy IPs (mass scanners/honeypots) should be heavily penalized"""
-    validator.probe.probe.return_value = {
-        "status": 200,
-        "server": "nginx",
-        "is_cloudflare": False, # Gets +35
-        "all_headers": {},
-        "redirect_chain": []
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": True, "riot": False, "classification": "malicious"}) # Gets -40
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("4.4.4.4", {})
-        
+async def test_out_of_scope_is_never_probed(validator):
+    result = await validator.validate_ip("9.9.9.9", {"sources": ["Historical-DNS"]})
+    assert result["verification_status"] == "out_of_scope"
     assert result["confirmed"] is False
-    assert result["confidence"] <= 30
+    validator.probe.probe.assert_not_awaited()
+
 
 @pytest.mark.asyncio
-async def test_single_moderate_signal_does_not_pass(validator):
-    """Test: A single moderate signal (e.g. only Banner match) does not exceed threshold"""
-    validator.probe.probe.return_value = None # No HTTP response
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    
-    # Only Banner Match (+20)
-    validator._grab_banners = AsyncMock(return_value={22: "SSH-2.0-OpenSSH_target.com"})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("5.5.5.5", {})
-        
+async def test_private_addresses_are_rejected(validator):
+    assert is_public_ip("127.0.0.1") is False
+    assert is_public_ip("10.0.0.1") is False
+    assert is_public_ip("169.254.169.254") is False
+    result = await validator.validate_ip("127.0.0.1", {})
+    assert result["verification_status"] == "non_public_address"
+    validator.probe.probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_redirect_only_is_never_confirmed(validator):
+    validator.probe.probe.return_value = response(status=302, redirect="https://example.com/")
+    result = await validator.validate_ip("8.8.8.8", {"sources": ["DNS"]})
+    assert result["verification_status"] == "redirect_only"
     assert result["confirmed"] is False
-    assert result["confidence"] == 0.25
+    assert "Redirect" in result["warnings"][0]
 
 
 @pytest.mark.asyncio
-async def test_scoring_historical_records(validator):
-    """Test: Legacy A records provide a lightweight score bump without exceeding threshold on their own"""
-    validator.probe.probe.return_value = None # No HTTP response
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    # Needs to match the checks metadata
-    meta = {
-        "sources": ["Historical-DNS"],
-        "oldest_seen": "2018-01-01",
-        "newest_seen": "2020-01-01"
-    }
-
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("6.6.6.6", meta)
-        
-    assert result["confirmed"] is False
-    assert result["confidence"] >= 0.05
-    assert "Historical DNS record detected" in str(result["evidence"]) or "Highly legacy DNS record detected" in str(result["evidence"])
-
-
-@pytest.mark.asyncio
-async def test_tls_scoring_exact_match(validator):
-    validator.probe.probe.return_value = {"status": 403, "server": "nginx"}
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={8443: ["target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    res = await validator.validate_ip("1.1.1.1", {})
-    assert any("Exact SSL match on port 8443" in e for e in res["evidence"])
-
-@pytest.mark.asyncio
-async def test_tls_scoring_wildcard_match(validator):
-    validator.probe.probe.return_value = {"status": 403, "server": "nginx"}
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={2053: ["*.target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    res = await validator.validate_ip("1.1.1.1", {})
-    assert any("Wildcard SSL match on port 2053" in e for e in res["evidence"])
-
-@pytest.mark.asyncio
-async def test_tls_scoring_mismatch_penalty(validator):
-    validator.probe.probe.return_value = {"status": 403, "server": "nginx"}
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={443: ["shared-host.com", "other.com"], 2053: ["another.com"]})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    res = await validator.validate_ip("1.1.1.1", {})
-    assert any("Mismatched SSL certificate on ports 443,2053" in e for e in res["evidence"])
-
-
-
-@pytest.mark.asyncio
-async def test_v2_score_normalization_consistency(validator):
-    """Verify that final score is tightly bounded to 0.0 - 1.0"""
-    validator.probe.probe.return_value = {
-        "status": 200, "server": "nginx", "is_cloudflare": False,
-        "domain_in_body": True, "redirect_chain": [{"location": "http://1.1.1.1/"}]
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"], 8443: ["target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="target.com")
-    validator._grab_banners = AsyncMock(return_value={22: "target.com", 21: "target.com"})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("1.1.1.1", {"ns_divergence": True})
-        
-    assert result["confidence"] <= 1.0
-    assert result["confidence"] > 0.8
-    assert result["confirmed"] is True
-    # Verify legacy fallback
-    legacy_result = await validator.validate_ip("1.1.1.1", {"ns_divergence": True}, scoring_version="v1")
-    assert legacy_result["confidence"] <= 100
-
-@pytest.mark.asyncio
-async def test_v2_no_inflation_correlated_weak_signals(validator):
-    """Ensure soft caps prevent a single category from dominating the score."""
-    validator.probe.probe.return_value = None
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="not-matching.com")
-    
-    # 10 different ports showing banners
-    banners = {port: "target.com" for port in range(1000, 1010)}
-    validator._grab_banners = AsyncMock(return_value=banners)
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("1.1.1.1", {})
-        
-    assert result["confidence"] < 0.8
+async def test_cdn_response_not_origin(validator):
+    validator.probe.probe.return_value = response(cloudflare=True)
+    result = await validator.validate_ip("8.8.8.8", {})
+    assert result["verification_status"] == "cdn_or_proxy"
     assert result["confirmed"] is False
 
-@pytest.mark.asyncio
-async def test_v2_low_medium_high_clusters(validator):
-    """Validate specific scenarios cleanly place into low, medium, and high score bands."""
-    
-    # LOW: Generic 403 config
-    validator.probe.probe.return_value = {"status": 403, "server": "nginx", "is_cloudflare": False}
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    low_res = await validator.validate_ip("1.1.1.1", {})
-    assert low_res["confidence"] < 0.6
-    
-    # MEDIUM: Wildcard cert but nothing else
-    validator.probe.probe.return_value = None
-    validator._get_cert_domains = AsyncMock(return_value={443: ["*.target.com"]})
-    med_res = await validator.validate_ip("1.1.1.1", {})
-    assert 0.3 <= med_res["confidence"] < 0.8
-    
-    # HIGH: Exact TLS match + CF bypass
-    validator.probe.probe.return_value = {"status": 200, "server": "nginx", "is_cloudflare": False}
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"]})
-    high_res = await validator.validate_ip("1.1.1.1", {})
-    assert high_res["confidence"] >= 0.8
 
 @pytest.mark.asyncio
-async def test_v2_score_normalization_consistency(validator):
-    """Verify that final score is tightly bounded to 0.0 - 1.0"""
-    validator.probe.probe.return_value = {
-        "status": 200, "server": "nginx", "is_cloudflare": False,
-        "domain_in_body": True, "redirect_chain": [{"location": "http://1.1.1.1/"}]
-    }
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"], 8443: ["target.com"]})
-    validator._reverse_dns = AsyncMock(return_value="target.com")
-    validator._grab_banners = AsyncMock(return_value={22: "target.com", 21: "target.com"})
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("1.1.1.1", {"ns_divergence": True})
-        
-    assert result["confidence"] <= 1.0
-    assert result["confidence"] > 0.8
-    assert result["confirmed"] is True
-    # Verify legacy fallback
-    legacy_result = await validator.validate_ip("1.1.1.1", {"ns_divergence": True}, scoring_version="v1")
-    assert legacy_result["confidence"] <= 100
-
-@pytest.mark.asyncio
-async def test_v2_no_inflation_correlated_weak_signals(validator):
-    """Ensure soft caps prevent a single category from dominating the score."""
-    validator.probe.probe.return_value = None
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="not-matching.com")
-    
-    # 10 different ports showing banners
-    banners = {port: "target.com" for port in range(1000, 1010)}
-    validator._grab_banners = AsyncMock(return_value=banners)
-    
-    with patch("socket.socket") as mock_socket:
-        mock_socket.return_value.recv.side_effect = asyncio.TimeoutError()
-        result = await validator.validate_ip("1.1.1.1", {})
-        
-    assert result["confidence"] < 0.8
+async def test_unverified_peer_cannot_confirm(validator):
+    direct = response()
+    direct["peer_verified"] = False
+    validator.probe.probe.return_value = direct
+    result = await validator.validate_ip("8.8.8.8", {})
+    assert result["verification_status"] == "inconclusive"
     assert result["confirmed"] is False
 
+
 @pytest.mark.asyncio
-async def test_v2_low_medium_high_clusters(validator):
-    """Validate specific scenarios cleanly place into low, medium, and high score bands."""
-    
-    # LOW: Generic 403 config
-    validator.probe.probe.return_value = {"status": 403, "server": "nginx", "is_cloudflare": False}
-    validator._check_greynoise = AsyncMock(return_value={"noise": False, "riot": False})
-    validator._get_cert_domains = AsyncMock(return_value={})
-    validator._reverse_dns = AsyncMock(return_value="")
-    validator._grab_banners = AsyncMock(return_value={})
-    
-    low_res = await validator.validate_ip("1.1.1.1", {})
-    assert low_res["confidence"] < 0.6
-    
-    # MEDIUM: Wildcard cert but nothing else
-    validator.probe.probe.return_value = None
-    validator._get_cert_domains = AsyncMock(return_value={443: ["*.target.com"]})
-    med_res = await validator.validate_ip("1.1.1.1", {})
-    assert 0.3 <= med_res["confidence"] < 0.8
-    
-    # HIGH: Exact TLS match + CF bypass
-    validator.probe.probe.return_value = {"status": 200, "server": "nginx", "is_cloudflare": False}
-    validator._get_cert_domains = AsyncMock(return_value={443: ["target.com"]})
-    high_res = await validator.validate_ip("1.1.1.1", {})
-    assert high_res["confidence"] >= 0.8
+async def test_http_only_exact_body_is_not_proof(validator):
+    validator.probe.probe.return_value = response(tls=False)
+    result = await validator.validate_ip("8.8.8.8", {})
+    assert result["application_match"] is True
+    assert result["confirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_generic_or_dynamic_page_not_confirmed(validator):
+    validator.probe.probe.return_value = response(hash_value="different")
+    result = await validator.validate_ip("8.8.8.8", {"sources": ["DNS", "Historical-DNS", "Shodan"]})
+    assert result["confirmed"] is False
+    assert result["verification_status"] == "related_service"
+
+    validator.probe.probe.return_value = response(size=20)
+    validator.baseline = response(ip=None, size=20)
+    result = await validator.validate_ip("8.8.8.8", {})
+    assert result["confirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_baseline_is_not_proof(validator):
+    validator.baseline = None
+    result = await validator.validate_ip("8.8.8.8", {})
+    assert result["confirmed"] is False
+    assert result["verification_status"] == "related_service"
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_disables_all_direct_validation():
+    val = OriginValidator("example.com", "example.com", Console(), MagicMock())
+    val.probe = MagicMock(spec=HeadersProbe)
+    val.probe.probe = AsyncMock()
+    val.probe.baseline = AsyncMock()
+    results = await val.validate_all({"8.8.8.8": {"sources": ["DNS"]}})
+    assert results["8.8.8.8"]["verification_status"] == "out_of_scope"
+    val.probe.probe.assert_not_awaited()
+    val.probe.baseline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probe_disables_redirect_and_sets_sni():
+    p = HeadersProbe("example.com", Console(), MagicMock())
+    direct = response()
+    direct["connected_ip"] = "8.8.8.8"
+    p._request = AsyncMock(return_value=direct)
+    data = await p.probe("8.8.8.8", "example.com")
+    assert data["peer_verified"] is True
+    kwargs = p._request.await_args.kwargs
+    assert kwargs["host"] == "example.com"
+    assert kwargs["sni"] == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_probe_no_nonstandard_ports_or_private_targets():
+    p = HeadersProbe("example.com", Console(), MagicMock())
+    p._request = AsyncMock()
+    assert await p.probe("127.0.0.1") is None
+    assert await p.probe("8.8.8.8", port=8080) is None
+    p._request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_probe_http_fallback_unverified_tls():
+    p = HeadersProbe("example.com", Console(), MagicMock())
+    direct = response(tls=False)
+    p._request = AsyncMock(side_effect=[None, direct])
+    result = await p.probe("8.8.8.8")
+    assert result["scheme"] == "http"
+    assert result["tls_verified"] is False
+    assert p._request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_baseline_taken_once(validator):
+    validator.baseline = None
+    data = await validator.validate_all({
+        "8.8.8.8": {"sources": ["DNS"]},
+        "9.9.9.9": {"sources": ["DNS"]},
+    })
+    validator.probe.baseline.assert_awaited_once_with("example.com")
+    assert data["8.8.8.8"]["confirmed"] is True
+    assert data["9.9.9.9"]["verification_status"] == "out_of_scope"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("baseline_override", [
+    {"tls_verified": False},
+    {"scheme": "http"},
+    {"scheme": None},
+])
+async def test_unverified_hostname_baseline_cannot_confirm_origin(
+    validator, baseline_override,
+):
+    baseline = response(ip=None)
+    baseline.update(baseline_override)
+    validator.baseline = baseline
+    # Even matching 400-byte responses and a verified direct candidate
+    # cannot authorize an application-match claim using a bad baseline.
+    result = await validator.validate_ip("8.8.8.8", {"sources": ["DNS"]})
+    assert result["confirmed"] is False
+    assert result["application_match"] is False
+    assert result["verification_status"] != "verified_direct_application"
+    assert any("baseline" in warning for warning in result["warnings"])

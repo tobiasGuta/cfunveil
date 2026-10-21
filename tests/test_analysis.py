@@ -1,4 +1,8 @@
+import os
+import sys
 import pytest
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(ROOT, "cfunveil"))
 from output.analysis import cluster_and_rank_ips, generate_justification
 
 def test_tiering_and_ranking():

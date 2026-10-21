@@ -39,3 +39,6 @@ pip-wheel-metadata/
 
 # Other
 *.db
+
+# Per-target scan checkpoints (never commit discovered infrastructure)
+cfunveil_*_session*.json
