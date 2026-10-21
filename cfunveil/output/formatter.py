@@ -54,8 +54,6 @@ def confirmed_badge(confirmed: bool) -> str:
 
 from output.analysis import cluster_and_rank_ips
 
-from output.analysis import cluster_and_rank_ips
-
 def print_summary(results: dict, console: Console, verbose: bool = False):
     console.print()
     console.rule("[bold cyan]RESULTS (v2 Model)[/bold cyan]")
@@ -69,7 +67,7 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
     top_candidates = analysis["top_candidates"]
     clusters = analysis["clusters"]
 
-    confirmed_origins = [ip["ip"] for ip in ranked_ips if ip["tier"] == "High"]
+    confirmed_origins = [ip["ip"] for ip in ranked_ips if ip.get("confirmed", False)]
 
     # ── Stats row ─────────────────────────────────────────────────────
     stats = Table.grid(padding=(0, 4))
@@ -79,7 +77,7 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
     stats.add_column()
     stats.add_row(
         f"[bold cyan]IPs Found[/bold cyan]\n[bold white]{len(ips)}[/bold white]",
-        f"[bold green]High Confidence[/bold green]\n[bold white]{len(confirmed_origins)}[/bold white]",
+        f"[bold green]Verified Direct Matches[/bold green]\n[bold white]{len(confirmed_origins)}[/bold white]",
         f"[bold yellow]Subdomains[/bold yellow]\n[bold white]{len(subdomains)}[/bold white]",
         f"[bold magenta]Identified Clusters[/bold magenta]\n[bold white]{len(clusters)}[/bold white]"
     )
@@ -107,6 +105,7 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
                 f"[bold white]{ip}[/bold white]   "
                 f"[{tier_color}]{tier} Tier ({conf_pct}%)[/{tier_color}]\n"
                 f"[dim]Org:[/dim] {org}  [dim]Sources:[/dim] {sources}\n"
+                f"[dim]Verification:[/dim] {data.get('verification_status', 'not_tested')}\n"
                 f"[bold cyan]Signals:[/bold cyan] {justif}\n"
             )
             
@@ -182,21 +181,11 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
 
     console.print(table)
 
-    if top_candidates:
-        highs = [c for c in top_candidates if c["tier"] == "High"]
-        if highs:
-            console.print()
-            console.rule("[bold yellow]NEXT STEPS[/bold yellow]")
-            ip = highs[0]["ip"]
-            target = results.get("target", "target.com")
-            v = f"""
-[bold white]1. Direct bypass test:[/bold white]
-   [cyan]curl -sk -H "Host: {target}" https://{ip}/ | head -50[/cyan]
-
-[bold white]2. Full port scan:[/bold white]
-   [cyan]nmap -sV -p- --open {ip}[/cyan]
-
-[bold white]3. Directory bruteforce on origin:[/bold white]
-   [cyan]ffuf -u https://{ip}/FUZZ -H "Host: {target}" -w wordlist.txt[/cyan]
-"""
-            console.print(v)
+    if confirmed_origins:
+        console.print()
+        console.rule("[bold cyan]VERIFICATION NOTES[/bold cyan]")
+        console.print(
+            "[dim]Verified means the same application content was served over a "
+            "validated direct TLS connection. It does not establish WAF bypass or "
+            "permission to test the IP. Check each program's scope before further testing.[/dim]"
+        )
