@@ -40,14 +40,14 @@ class ReconEngine:
         self.cdn_edges: dict[str, dict] = {}
         # Version the checkpoint filename so earlier, overinclusive scan states
         # cannot silently reintroduce unrelated origin candidates.
-        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session_v5.json"
+        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session_v6.json"
         self.completed_modules: set[str] = set()
         self.subdomains: set[str] = set()
 
         if self.config.get("resume") and os.path.exists(self.session_file):
             with open(self.session_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            if state.get("target") != self.target or state.get("version") != 5:
+            if state.get("target") != self.target or state.get("version") != 6:
                 raise ValueError("Session target/version mismatch; start a new scan")
             self.discovered_ips = state.get("discovered_ips", {})
             self.related_ips = state.get("related_ips", {})
@@ -72,7 +72,7 @@ class ReconEngine:
         """Atomically checkpoint discoveries without ever clearing them."""
         import tempfile
         state = {
-            "version": 5,
+            "version": 6,
             "target": self.target,
             "discovered_ips": self.discovered_ips,
             "related_ips": self.related_ips,
@@ -170,6 +170,13 @@ class ReconEngine:
             return False
 
     async def run(self) -> dict:
+        # Never mix an unverified passive-source connector with an active
+        # verification run, including when this engine is used outside CLI.
+        if self.config.get("validate") and self.config.get("verify_ssl") is False:
+            raise ValueError(
+                "--insecure is only supported with --no-validate; "
+                "TLS verification is required for origin confirmation"
+            )
         results = {
             "target": self.target,
             "root_domain": self.root_domain,
@@ -216,14 +223,24 @@ class ReconEngine:
                 dns_enum = DNSEnumerator(self.target, self.root_domain, self.console)
                 dns_results = await dns_enum.run()
 
-                for ip in dns_results.get("ips", []):
-                    self._add_ip(ip, "DNS", {
-                        "records": dns_results.get("records", {}).get(ip, [])
-                    })
-                for ip in dns_results.get("cloudflare_ips", []):
-                    self._add_ip(ip, "DNS", {
-                        "records": dns_results.get("records", {}).get(ip, [])
-                    }, category="cdn")
+                # Root-domain enumeration also finds sibling hostnames. Their
+                # addresses cannot become origin leads for the requested apex.
+                # Missing hostname evidence is likewise insufficient.
+                from core.dns_enum import is_cloudflare_ip
+                for ip in set(dns_results.get("ips", [])) | set(
+                    dns_results.get("cloudflare_ips", [])
+                ):
+                    records = dns_results.get("records", {}).get(ip, [])
+                    exact = any(
+                        isinstance(record, dict)
+                        and str(record.get("domain", "")).lower().rstrip(".") == self.target
+                        for record in records
+                    )
+                    category = (
+                        ("cdn" if is_cloudflare_ip(ip) else "candidate")
+                        if exact else "related"
+                    )
+                    self._add_ip(ip, "DNS", {"records": records}, category=category)
                 self.subdomains.update(dns_results.get("subdomains", []))
                 self.console.print(f"    [dim]Found {len(dns_results.get('ips', []))} IPs, "
                                    f"{len(dns_results.get('subdomains', []))} subdomains[/dim]")
