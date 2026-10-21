@@ -19,6 +19,7 @@ from aiohttp import ClientSession, TCPConnector, web
 from rich.console import Console
 
 from core.engine import ReconEngine
+from core.historical import HistoricalSources
 from core.headers_probe import HeadersProbe
 from core.validator import OriginValidator
 
@@ -120,21 +121,53 @@ def _make_certificate(directory):
     return server_ssl, trusted_client_ssl
 
 
-def _discovered_leads(*, include_origin):
-    """Replay synthetic hostname-attributed intelligence, no API requests."""
-    engine = ReconEngine({"target": TARGET}, Console(quiet=True))
-    evidence = {"records": [{"domain": TARGET, "source": "lab-passive-dns"}]}
-    if include_origin:
-        engine._add_historical_ip(ORIGIN_IP, evidence)
-    engine._add_historical_ip(DECOY_IP, evidence)
-    engine._add_historical_ip(PROXY_IP, evidence)
-    engine._add_historical_ip(REDIRECT_IP, evidence)
-    # An unrelated sibling is *not* promoted to a target-origin lead.
-    engine._add_historical_ip("127.0.0.16", {
-        "records": [{"domain": "mail.lab.test", "source": "lab-passive-dns"}]
-    })
-    return engine
+async def _discovered_leads(*, include_origin):
+    """Replay a source-provider response through the actual urlscan parser.
 
+    This does NOT query urlscan.io; the source adapter is purely in memory.
+    """
+    entries = [
+        (DECOY_IP, TARGET), (PROXY_IP, TARGET),
+        (REDIRECT_IP, TARGET), ("127.0.0.16", "mail.lab.test"),
+        ("203.0.113.45", "third-party.example"),
+    ]
+    if include_origin:
+        entries.insert(0, (ORIGIN_IP, TARGET))
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def json(self):
+            return {
+                "results": [
+                    {
+                        "page": {"ip": ip, "domain": hostname},
+                        "task": {"time": "2026-10-21T00:00:00Z"},
+                    } for ip, hostname in entries
+                ]
+            }
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            assert url.startswith("https://urlscan.io/api/v1/search/")
+            assert "domain:lab.test" in url
+            return FakeResponse()
+
+    source = HistoricalSources(
+        "lab.test", {}, Console(quiet=True), FakeSession(), target=TARGET
+    )
+    await source._query_urlscan()
+    engine = ReconEngine({"target": TARGET}, Console(quiet=True))
+    for ip, metadata in source.found_ips.items():
+        engine._add_historical_ip(ip, metadata)
+    assert "203.0.113.45" not in engine.discovered_ips
+    return engine
 
 async def run_benchmark():
     """Run deterministic discovery replay + actual local TLS verification.
@@ -169,8 +202,8 @@ async def run_benchmark():
                 s.bind((UNREACHABLE_IP, 0))
                 ports[UNREACHABLE_IP] = s.getsockname()[1]
 
-            seeded = _discovered_leads(include_origin=True)
-            hidden = _discovered_leads(include_origin=False)
+            seeded = await _discovered_leads(include_origin=True)
+            hidden = await _discovered_leads(include_origin=False)
             assert ORIGIN_IP in seeded.discovered_ips
             assert ORIGIN_IP not in hidden.discovered_ips
             assert "127.0.0.16" in seeded.related_ips
@@ -211,7 +244,7 @@ async def run_benchmark():
             report = {
                 "benchmark": "local_only_tls_origin_lab",
                 "target": TARGET,
-                "scope": "127.0.0.0/8 loopback only; synthetic passive-DNS evidence",
+                "scope": "127.0.0.0/8 loopback only; synthetic urlscan provider response",
                 "discovery": {
                     "known_origin_seeded": ORIGIN_IP in seeded.discovered_ips,
                     "known_origin_absent_without_evidence": ORIGIN_IP not in hidden.discovered_ips,
@@ -230,7 +263,7 @@ async def run_benchmark():
                     ),
                 },
                 "limitations": [
-                    "Known origin supplied via synthetic passive-DNS evidence; no internet-scale discovery tested",
+                    "Known origin supplied via synthetic urlscan provider response; no internet-scale discovery tested",
                     "Generated TLS trust root and lab-only loopback authorization override never used in production",
                     "Loopback reverse proxy is represented by a cf-ray response header, not a deployed CDN",
                     "Matching static responses do not establish WAF bypass or an application vulnerability",
