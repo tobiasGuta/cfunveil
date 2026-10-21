@@ -37,31 +37,19 @@ class ASNIntelligence:
         self.session = session
 
     async def run(self) -> dict:
+        """Enrich observed addresses only; never invent candidate neighbor IPs."""
         if not self.ips:
             return {"resolved": {}, "sibling_ips": []}
 
-        tasks = [self._lookup_ip(ip) for ip in self.ips[:50]]  # Limit to 50 IPs
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        resolved = {}
-        sibling_ips = []
-
-        for result in results:
-            if isinstance(result, dict) and result.get("ip"):
-                ip = result["ip"]
-                resolved[ip] = result
-
-                # For small CIDRs on interesting providers, expand range
-                if (result.get("asn") not in CF_ASNS and
-                        result.get("prefix") and
-                        self._cidr_size(result["prefix"]) <= 256):
-                    siblings = self._expand_cidr(result["prefix"])
-                    sibling_ips.extend(siblings[:20])  # Max 20 siblings per CIDR
-
-        return {
-            "resolved": resolved,
-            "sibling_ips": list(set(sibling_ips) - set(self.ips)),
+        results = await asyncio.gather(
+            *(self._lookup_ip(ip) for ip in self.ips[:50]), return_exceptions=True
+        )
+        resolved = {
+            result["ip"]: result
+            for result in results
+            if isinstance(result, dict) and result.get("ip")
         }
+        return {"resolved": resolved, "sibling_ips": []}
 
     async def _lookup_ip(self, ip: str) -> dict:
         """Use ipinfo.io (free) for ASN/org lookup"""
