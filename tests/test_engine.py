@@ -28,7 +28,7 @@ def test_clean_start_keeps_discovered_ips_and_root_domain(tmp_path, monkeypatch)
     engine.completed_modules.add("dns")
     engine._save_session()
     assert "8.8.8.8" in engine.discovered_ips
-    state = json.loads((tmp_path / "cfunveil_example_com_session.json").read_text())
+    state = json.loads((tmp_path / "cfunveil_example_com_session_v2.json").read_text())
     assert state["target"] == "example.com"
     assert "8.8.8.8" in state["discovered_ips"]
 
@@ -47,10 +47,49 @@ def test_resume_preserves_prior_evidence(tmp_path, monkeypatch):
 
 def test_resume_rejects_mismatched_target(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    path = tmp_path / "cfunveil_example_com_session.json"
+    path = tmp_path / "cfunveil_example_com_session_v2.json"
     path.write_text(json.dumps({
-        "version": 1, "target": "another.com",
+        "version": 2, "target": "another.com",
         "discovered_ips": {}, "completed_modules": [], "subdomains": [],
     }))
     with pytest.raises(ValueError, match="mismatch"):
         ReconEngine({"target": "example.com", "resume": True}, Console())
+
+
+def test_candidates_are_separated_by_hostname_and_cdn():
+    engine = ReconEngine({"target": "api-cloudfront.life360.com"}, Console())
+    engine._add_historical_ip("104.18.37.240", {
+        "records": [
+            {"domain": "api-cloudfront.life360.com", "source": "urlscan"}
+        ]
+    })
+    engine._add_historical_ip("54.174.220.14", {
+        "records": [
+            {"domain": "amplitude-go-dev.internal-data.dev.life360.com", "source": "urlscan"}
+        ]
+    })
+    engine._add_historical_ip("54.159.219.253", {
+        "records": [
+            {"domain": "api-cloudfront.life360.com", "source": "securitytrails"}
+        ]
+    })
+    assert "104.18.37.240" in engine.cdn_edges
+    assert "104.18.37.240" not in engine.discovered_ips
+    assert "54.174.220.14" in engine.related_ips
+    assert "54.174.220.14" not in engine.discovered_ips
+    assert engine.discovered_ips["54.159.219.253"]["records"][0]["domain"] == "api-cloudfront.life360.com"
+
+
+def test_checkpoint_roundtrips_related_and_cdn_evidence(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    engine = ReconEngine({"target": "api-cloudfront.life360.com"}, Console())
+    engine._add_ip("8.8.8.8", "Historical-DNS", {
+        "records": [{"domain": "other.life360.com", "source": "urlscan"}]
+    }, category="related")
+    engine._add_ip("104.18.37.240", "DNS", {
+        "records": [{"domain": "api-cloudfront.life360.com", "record_type": "A"}]
+    }, category="cdn")
+    engine._save_session()
+    resumed = ReconEngine({"target": "api-cloudfront.life360.com", "resume": True}, Console())
+    assert "8.8.8.8" in resumed.related_ips
+    assert resumed.cdn_edges["104.18.37.240"]["records"][0]["domain"] == "api-cloudfront.life360.com"
