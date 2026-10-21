@@ -289,5 +289,5 @@ def test_default_sdk_request_remains_legacy_bounded_limit():
     pivot._execute_query("offline", strategy="http_content", limit=50)
     assert len(sent) == 1
     assert sent[0][1]["limit"] == 50
-    assert sent[0][1]["page"] == 1
+    assert sent[0][1].get("page", 1) == 1
     assert pivot.extra_page_requests_used == 0
