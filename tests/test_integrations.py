@@ -142,3 +142,21 @@ def test_html_report_escapes_data_and_scales_scores(tmp_path):
     assert "<script>alert(1)</script>" not in text
     assert "&lt;script&gt;" in text
     assert "&lt;img" in text
+
+
+def test_all_does_not_override_explicit_no_validate(monkeypatch):
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, config, console):
+            captured.update(config)
+
+        async def run(self):
+            return {"ips": {}, "subdomains": [], "summary": {}}
+
+    monkeypatch.setattr("main.ReconEngine", FakeEngine)
+    monkeypatch.setattr("main.print_summary", lambda *args, **kwargs: None)
+    result = CliRunner().invoke(main, ["-t", "example.com", "--all", "--no-validate", "--quiet"])
+    assert result.exit_code == 0, result.output
+    assert captured["deep"] is True
+    assert captured["validate"] is False
