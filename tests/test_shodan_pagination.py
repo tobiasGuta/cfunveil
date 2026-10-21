@@ -80,8 +80,10 @@ def test_opt_in_queries_first_request_complete_page_before_page_two():
     assert rows[-1]["pagination_stop_reason"] == "provider_total_reached"
     assert pivot.extra_page_requests_used == 2
     assert len(pivot.found_ips) == 205
-    assert all(x["sources"] == ["Shodan"] for x in [])  # no engine-origin promotion
-    assert pivot.api is not None
+    assert all(
+        entry["shodan_relations"] == ["related_hostname"]
+        for entry in pivot.found_ips.values()
+    )
 
 
 def test_global_budget_across_multiple_queries_and_page_cap():
