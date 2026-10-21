@@ -28,16 +28,22 @@ class ReconEngine:
             raise ValueError("target must be a domain name")
         self.root_domain = ".".join(parts[-2:])
         self.discovered_ips: dict[str, dict] = {}
-        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session.json"
+        self.related_ips: dict[str, dict] = {}
+        self.cdn_edges: dict[str, dict] = {}
+        # Version the checkpoint filename so earlier, overinclusive scan states
+        # cannot silently reintroduce unrelated origin candidates.
+        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session_v2.json"
         self.completed_modules: set[str] = set()
         self.subdomains: set[str] = set()
 
         if self.config.get("resume") and os.path.exists(self.session_file):
             with open(self.session_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            if state.get("target") != self.target or state.get("version") != 1:
+            if state.get("target") != self.target or state.get("version") != 2:
                 raise ValueError("Session target/version mismatch; start a new scan")
             self.discovered_ips = state.get("discovered_ips", {})
+            self.related_ips = state.get("related_ips", {})
+            self.cdn_edges = state.get("cdn_edges", {})
             self.completed_modules = set(state.get("completed_modules", []))
             self.subdomains = set(state.get("subdomains", []))
             self.console.print(f"[green][+] Restored {len(self.completed_modules)} completed modules[/green]")
@@ -46,9 +52,11 @@ class ReconEngine:
         """Atomically checkpoint discoveries without ever clearing them."""
         import tempfile
         state = {
-            "version": 1,
+            "version": 2,
             "target": self.target,
             "discovered_ips": self.discovered_ips,
+            "related_ips": self.related_ips,
+            "cdn_edges": self.cdn_edges,
             "completed_modules": sorted(self.completed_modules),
             "subdomains": sorted(self.subdomains),
         }
@@ -67,16 +75,45 @@ class ReconEngine:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    def _add_ip(self, ip: str, source: str, extra: dict = None):
-        """Thread-safe IP registration with source tracking"""
+    def _add_ip(self, ip: str, source: str, extra: dict | None = None,
+                *, category: str = "candidate"):
+        """Merge source evidence, keeping provenance and candidate types separate."""
         if not ip or not self._is_valid_ip(ip):
             return
-        if ip not in self.discovered_ips:
-            self.discovered_ips[ip] = {"sources": [], "details": {}}
-        if source not in self.discovered_ips[ip]["sources"]:
-            self.discovered_ips[ip]["sources"].append(source)
+        groups = {
+            "candidate": self.discovered_ips,
+            "related": self.related_ips,
+            "cdn": self.cdn_edges,
+        }
+        if category not in groups:
+            raise ValueError(f"Unknown candidate category: {category}")
+        registry = groups[category]
+        data = registry.setdefault(ip, {"sources": [], "details": {}, "records": []})
+        if source not in data["sources"]:
+            data["sources"].append(source)
+        for record in (extra or {}).get("records", []):
+            if isinstance(record, dict) and record not in data["records"]:
+                data["records"].append(dict(record))
         if extra:
-            self.discovered_ips[ip]["details"].update(extra)
+            details = {
+                key: value for key, value in extra.items()
+                if key not in ("records", "sources")
+            }
+            data["details"].update(details)
+
+    def _add_historical_ip(self, ip: str, meta: dict):
+        """Promote only historical records explicitly bound to the scan host."""
+        from core.dns_enum import is_cloudflare_ip
+        records = meta.get("records", [])
+        category = (
+            "candidate" if any(
+                (r.get("domain") or "").lower().rstrip(".") == self.target
+                for r in records
+            ) else "related"
+        )
+        if is_cloudflare_ip(ip):
+            category = "cdn"
+        self._add_ip(ip, "Historical-DNS", meta, category=category)
 
     def _is_valid_ip(self, ip: str) -> bool:
         # Accept both IPv4 and IPv6 using the stdlib `ipaddress` module
@@ -93,6 +130,8 @@ class ReconEngine:
             "root_domain": self.root_domain,
             "subdomains": [],
             "ips": {},
+            "related_infrastructure": {},
+            "cdn_edges": {},
             "validated_origins": [],
             "asn_data": {},
             "summary": {}
@@ -123,7 +162,7 @@ class ReconEngine:
 
             # If initial IPs were provided (email headers), register them first
             for ip in self.config.get("initial_ips", []):
-                self._add_ip(ip, "Email-Header")
+                self._add_ip(ip, "Email-Header", category="related")
 
             # ── Module 1: DNS Enumeration ─────────────────────────────
             if 'dns' not in self.completed_modules:
@@ -133,7 +172,13 @@ class ReconEngine:
                 dns_results = await dns_enum.run()
 
                 for ip in dns_results.get("ips", []):
-                    self._add_ip(ip, "DNS")
+                    self._add_ip(ip, "DNS", {
+                        "records": dns_results.get("records", {}).get(ip, [])
+                    })
+                for ip in dns_results.get("cloudflare_ips", []):
+                    self._add_ip(ip, "DNS", {
+                        "records": dns_results.get("records", {}).get(ip, [])
+                    }, category="cdn")
                 self.subdomains.update(dns_results.get("subdomains", []))
                 self.console.print(f"    [dim]Found {len(dns_results.get('ips', []))} IPs, "
                                    f"{len(dns_results.get('subdomains', []))} subdomains[/dim]")
@@ -153,7 +198,7 @@ class ReconEngine:
                 cert_results = await cert_intel.run()
 
                 for ip in cert_results.get("ips", []):
-                    self._add_ip(ip, "SSL-Cert")
+                    self._add_ip(ip, "SSL-Cert", category="related")
                 self.subdomains.update(cert_results.get("subdomains", []))
                 self.console.print(f"    [dim]Found {len(cert_results.get('ips', []))} IPs from cert data[/dim]")
                 self.completed_modules.add('ssl')
@@ -189,7 +234,7 @@ class ReconEngine:
             self.console.print("[bold green][4/6][/bold green] Historical DNS & Passive Sources...")
             from core.historical import HistoricalSources
             historical = HistoricalSources(
-                self.root_domain, self.config, self.console, session
+                self.root_domain, self.config, self.console, session, target=self.target
             )
 
             if self.config.get("no_wait"):
@@ -216,16 +261,16 @@ class ReconEngine:
                         found = payload.get("ips", {})
                         iterator = found.items() if isinstance(found, dict) else ((ip, {}) for ip in found)
                         for ip, meta in iterator:
-                            self._add_ip(ip, "Historical-DNS", meta)
+                            self._add_historical_ip(ip, meta)
                     else:
                         for ip, meta in payload.get("ips", {}).items():
-                            self._add_ip(ip, {"shodan": "Shodan", "fofa": "FOFA", "zoomeye": "ZoomEye"}[name], meta)
+                            self._add_ip(ip, {"shodan": "Shodan", "fofa": "FOFA", "zoomeye": "ZoomEye"}[name], meta, category="related")
             else:
                 # Blocking (original) behavior
                 if shodan:
                     shodan_results = await shodan.run()
                     for ip, meta in shodan_results.get("ips", {}).items():
-                        self._add_ip(ip, "Shodan", meta)
+                        self._add_ip(ip, "Shodan", meta, category="related")
                     self.console.print(
                         f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]"
                     )
@@ -235,22 +280,22 @@ class ReconEngine:
                 if fofa:
                     fofa_results = await fofa.run()
                     for ip, meta in fofa_results.get("ips", {}).items():
-                        self._add_ip(ip, "FOFA", meta)
+                        self._add_ip(ip, "FOFA", meta, category="related")
                     self.console.print(f"    [dim]FOFA returned {len(fofa_results.get('ips', {}))} IPs[/dim]")
 
                 if zoomeye:
                     zoomeye_results = await zoomeye.run()
                     for ip, meta in zoomeye_results.get("ips", {}).items():
-                        self._add_ip(ip, "ZoomEye", meta)
+                        self._add_ip(ip, "ZoomEye", meta, category="related")
                     self.console.print(f"    [dim]ZoomEye returned {len(zoomeye_results.get('ips', {}))} IPs[/dim]")
 
                 hist_results = await historical.run()
                 if isinstance(hist_results.get("ips"), dict):
                     for ip, meta in hist_results.get("ips", {}).items():
-                        self._add_ip(ip, "Historical-DNS", meta)
+                        self._add_historical_ip(ip, meta)
                 else:
                     for ip in hist_results.get("ips", []):
-                        self._add_ip(ip, "Historical-DNS")
+                        self._add_ip(ip, "Historical-DNS", category="related")
                 self.console.print(
                     f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
                 )
@@ -263,9 +308,7 @@ class ReconEngine:
             asn_results = await asn_intel.run()
 
             results["asn_data"] = asn_results
-            # Add any sibling IPs found through ASN expansion
-            for ip in asn_results.get("sibling_ips", []):
-                self._add_ip(ip, "ASN-Expansion")
+            # ASN information enriches observed addresses but never creates leads.
             self.console.print(
                 f"    [dim]Resolved ASN for {len(asn_results.get('resolved', {}))} IPs[/dim]"
             )
@@ -298,10 +341,19 @@ class ReconEngine:
                     f"    [dim]Confirmed {len(origins)} origin IP(s)[/dim]"
                 )
 
+        # Classify unrelated-sibling and CDN evidence outside the origin shortlist.
+        results["related_infrastructure"] = {
+            ip: meta for ip, meta in self.related_ips.items()
+            if ip not in self.discovered_ips and ip not in self.cdn_edges
+        }
+        results["cdn_edges"] = self.cdn_edges
+
         # ── Summary ─────────────────────────────────────────────────
         results["summary"] = {
             "total_ips_found": len(self.discovered_ips),
             "confirmed_origins": len(results.get("validated_origins", [])),
+            "related_ip_count": len(results["related_infrastructure"]),
+            "cdn_edge_count": len(self.cdn_edges),
             "total_subdomains": len(results["subdomains"]),
             "sources_used": self._get_sources_used(),
         }
