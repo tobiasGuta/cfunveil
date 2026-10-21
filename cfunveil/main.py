@@ -140,11 +140,10 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
     if not authorized_cidr and not no_validate:
         console.print("[yellow][!] Direct-IP validation disabled: provide explicit --authorized-cidr ranges permitted by the program.[/yellow]")
 
-    # If --all is specified, enable deep scanning and validation by default.
+    # --all enables deep discovery but must not override explicit --no-validate.
     if config.get("all"):
         config["deep"] = True
-        config["validate"] = True
-        console.print("[dim][*] Running in --all mode: enabling deep scans and validation (best-effort)[/dim]")
+        console.print("[dim][*] Running in --all mode: deep discovery enabled (best-effort)[/dim]")
 
     # Configure logging
     import logging
