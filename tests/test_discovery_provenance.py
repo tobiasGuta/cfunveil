@@ -237,7 +237,11 @@ async def test_apex_scan_keeps_sibling_dns_and_sibling_cloudflare_out_of_origin_
     }
     monkeypatch.setattr(DNSEnumerator, "run", AsyncMock(return_value=data))
     monkeypatch.setattr(CertIntelligence, "run", AsyncMock(return_value={
-        "ips": [], "records": {}, "subdomains": [],
+        "ips": ["172.64.146.193"],
+        "records": {"172.64.146.193": [
+            {"domain": "portal.example.com", "record_type": "cert-hostname-DNS-A"}
+        ]},
+        "subdomains": ["portal.example.com"],
     }))
     monkeypatch.setattr(HistoricalSources, "run", AsyncMock(return_value={
         "ips": {},
@@ -253,7 +257,8 @@ async def test_apex_scan_keeps_sibling_dns_and_sibling_cloudflare_out_of_origin_
     assert results["ips"]["8.8.8.8"]["evidence_status"] == "current_dns_observed"
     assert set(results["cdn_edges"]) == {"104.18.37.240"}
     assert set(results["related_infrastructure"]) == {
-        "9.9.9.9", "1.1.1.1", "172.64.150.73",
+        "9.9.9.9", "1.1.1.1", "172.64.150.73", "172.64.146.193",
     }
+    assert results["related_infrastructure"]["172.64.146.193"]["records"][0]["domain"] == "portal.example.com"
     assert results["related_infrastructure"]["9.9.9.9"]["records"][0]["domain"] == "mail.example.com"
     assert results["summary"]["total_ips_found"] == 1
