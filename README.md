@@ -80,6 +80,35 @@ Without such approval, run passive discovery instead:
 python cfunveil/main.py -t example.com --no-validate -o leads.json
 ```
 
+### Offline temporal discovery benchmark
+
+Run the second benchmark to check source attribution without querying live targets:
+
+```bash
+python scripts/run_discovery_benchmark.py --output discovery-benchmark.json
+python -m pytest tests -q
+```
+
+This replay passes deterministic data through the existing DNS, urlscan-style
+historical source and crt.sh certificate parsers. It covers current exact-host
+DNS observations, an origin IP that moved (new DNS and stale historical IP),
+a misleading sibling hostname or wildcard certificate, and recent/undated
+passive history.
+
+Every candidate now includes a separate `evidence_status` in the JSON output:
+`current_dns_observed`, `historical_recent`, `historical_stale`, or
+`historical_undated`. Dated historical states use the provider's
+`last_seen` field where valid, with 90 days as a descriptive threshold.
+Historical leads are **preserved** and still require independent direct
+application verification before any confirmation. A DNS observation is not
+proof of a server's ownership or permission to probe an IP. Unknown or
+future timestamps cannot be treated as recent evidence.
+
+The benchmark uses an injected UTC clock and **never** contacts public DNS
+or intelligence services. It measures attribution and data handling rather
+than provider coverage, origin discovery on the internet, or WAF bypass.
+See the separate loopback HTTPS benchmark for validation behavior.
+
 ## What's New (April 2026)
 
 - **Session Persistence & Resume**: For large, long-running scans that get interrupted, `cfunveil` now automatically persists state to a session file (e.g., `cfunveil_target_com_session.json`). Use `--resume` or accept the interactive prompt to pick up exactly where the scan was aborted, skipping completed intelligence modules.
