@@ -20,7 +20,7 @@ authorization to test that service.
 Cloudflare IPs seen **only** with sibling-domain evidence remain related infrastructure,
 not CDN-edge evidence for the requested hostname.
 
-New scan checkpoints use a `_session_v3.json` suffix so old, overinclusive
+New scan checkpoints use a `_session_v4.json` suffix so old, overinclusive
 scan results cannot silently reappear after `--resume`.
 
 
