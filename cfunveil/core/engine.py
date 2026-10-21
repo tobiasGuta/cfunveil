@@ -7,6 +7,8 @@ import json
 import os
 import re
 import asyncio
+from datetime import datetime, timezone
+from core.evidence import classify_target_evidence
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.live import Live
@@ -17,7 +19,8 @@ from rich.table import Table
 
 
 class ReconEngine:
-    def __init__(self, config: dict, console: Console):
+    def __init__(self, config: dict, console: Console, *, evidence_as_of=None):
+        self.evidence_as_of = evidence_as_of or datetime.now(timezone.utc)
         self.config = config
         self.console = console
         self.target = config["target"].rstrip(".").lower()
@@ -100,6 +103,10 @@ class ReconEngine:
                 if key not in ("records", "sources")
             }
             data["details"].update(details)
+        if category == "candidate":
+            data.update(classify_target_evidence(
+                self.target, data["records"], as_of=self.evidence_as_of,
+            ))
 
     def _add_historical_ip(self, ip: str, meta: dict):
         """Promote only historical records explicitly bound to the scan host."""
