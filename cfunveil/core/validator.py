@@ -126,7 +126,9 @@ class OriginValidator:
 
         baseline = self.baseline
         same_body = bool(
-            baseline and baseline.get("status") == 200
+            baseline and baseline.get("scheme") == "https"
+            and baseline.get("tls_verified") is True
+            and baseline.get("status") == 200
             and status == 200 and baseline.get("body_complete")
             and direct.get("body_complete")
             and baseline.get("body_length") is not None
@@ -139,8 +141,13 @@ class OriginValidator:
             result["evidence"].append(
                 "Complete nontrivial response body exactly matches the HTTPS hostname baseline"
             )
-        elif not baseline:
-            result["warnings"].append("No valid HTTPS hostname baseline available")
+        elif not baseline or not (
+            baseline.get("scheme") == "https"
+            and baseline.get("tls_verified") is True
+        ):
+            result["warnings"].append(
+                "No certificate-verified HTTPS hostname baseline available"
+            )
         else:
             result["warnings"].append("No exact baseline body match; dynamic pages may be inconclusive")
 
