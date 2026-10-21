@@ -26,3 +26,5 @@ jobs:
         run: python -m pytest tests -q
       - name: Run controlled origin benchmark
         run: python scripts/run_origin_benchmark.py
+      - name: Run offline temporal discovery benchmark
+        run: python scripts/run_discovery_benchmark.py
