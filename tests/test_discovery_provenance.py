@@ -148,3 +148,36 @@ async def test_scan_outputs_exclusive_origin_related_and_cdn_buckets(tmp_path, m
     assert results["summary"]["total_ips_found"] == 1
     assert results["summary"]["cdn_edge_count"] == 1
     assert results["summary"]["related_ip_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_certificate_intel_retains_only_exact_requested_subdomain(monkeypatch):
+    from core.cert_intel import CertIntelligence
+
+    cert = CertIntelligence(
+        "life360.com", {}, Console(), MagicMock(), target="api-cloudfront.life360.com"
+    )
+    assert cert._matches_requested_scope("api-cloudfront.life360.com")
+    assert not cert._matches_requested_scope("www.life360.com")
+    assert not cert._matches_requested_scope("evil-life360.com")
+    assert not cert._matches_requested_scope("api-cloudfront.life360.com.attacker.test")
+
+    class Resolver:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def query(self, name, kind):
+            if name == "api-cloudfront.life360.com" and kind == "A":
+                return [SimpleNamespace(host="104.18.37.240")]
+            raise ValueError("no answer")
+
+    monkeypatch.setattr("core.dns_enum.aiodns.DNSResolver", Resolver)
+    cert.found_subdomains.update(
+        {"api-cloudfront.life360.com"}
+    )
+    await cert._resolve_subdomains()
+    assert cert.records == {
+        "104.18.37.240": [
+            {"domain": "api-cloudfront.life360.com", "record_type": "cert-hostname-DNS-A"}
+        ]
+    }
