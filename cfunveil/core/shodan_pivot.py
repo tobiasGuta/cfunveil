@@ -245,6 +245,19 @@ class ShodanPivot:
                 )
                 raise
 
+            # Legacy single-page calls may intentionally request only 50
+            # results. Reaching that cap is not end-of-provider coverage.
+            if self.max_pages == 1:
+                if provider_total is not None and len(matches) >= provider_total:
+                    self.query_metrics.mark_stop("provider_total_reached")
+                elif len(matches) >= page_limit or (
+                    provider_total is not None and provider_total > len(matches)
+                ):
+                    self.query_metrics.mark_stop("per_query_page_cap")
+                else:
+                    self.query_metrics.mark_stop("short_page")
+                break
+
             # Only follow full-sized pages. A partial page with total >100
             # must not trick us into skipping unseen first-page entries.
             if provider_total is not None and page * 100 >= provider_total:
