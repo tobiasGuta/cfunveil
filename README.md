@@ -343,10 +343,12 @@ queries, API-key requirements, or live IP probes are introduced by this feature.
 ## Shodan query-effectiveness measurements
 
 The top-level JSON field `shodan_query_metrics` and the HTML report now show a
-row **for every attempted Shodan search query**, including successful
-zero-result searches, errors and skipped favicon lookups (when unavailable).
-No queries were removed or reordered. Metrics reflect the requested scan
-hostname and public-suffix-aware scope, with no target-specific rules.
+row **for every fetched Shodan query page** (or a skipped search), including
+successful zero-result searches, errors and skipped favicon lookups (when
+unavailable). No queries were removed or reordered. Metrics reflect the
+requested scan hostname and public-suffix-aware scope, with no target-specific
+rules. When optional pagination is enabled, overlap/exclusive contributions
+are calculated at page granularity rather than aggregated by query.
 
 - `returned_matches` is the number returned by the provider; `accepted_matches`
   counts non-filtered matches. `unique_ips` measures distinct accepted IPs.
@@ -362,12 +364,13 @@ hostname and public-suffix-aware scope, with no target-specific rules.
   is the provider's indexed match count if supplied, not the number inspected.
 - `status: error` retains only the exception type; missing counts are `null`
   rather than misleading zero. `status: skipped` includes a reason.
-  Search retries are internal to the client and are not individually
-  measured.
+  Original first-page retries are internal to the client and are not
+  individually measured; pagination beyond page one never retries.
 - `query_credits_used` remains `null` because the Shodan search response
-  does not report actual consumed credits. The feature does **not** make
-  extra account-info calls, incur new search queries, or estimate costs from
-  response counts.
+  does not report actual consumed credits. Query-effectiveness instrumentation
+  alone does not incur new provider queries, but explicitly enabled pagination
+  does request extra result pages. Neither feature makes account-info calls or
+  estimates credit costs from response counts.
 
 These metrics explain the **bounded result samples** from a particular
 authorized scan. They do not establish exhaustive provider coverage, prove
