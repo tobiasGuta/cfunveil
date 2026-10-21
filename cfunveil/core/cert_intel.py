@@ -30,6 +30,22 @@ class CertIntelligence:
             return domain == self.target
         return domain == self.root_domain or domain.endswith("." + self.root_domain)
 
+    def _matched_cert_hostname(self, name: str) -> str | None:
+        """Never turn a wildcard's suffix into an invented host observation.
+
+        Wildcard SANs are certificate scope, not proof of any IP. Resolve only
+        an exact requested hostname that would be covered by a one-label
+        wildcard; for root-domain scans, never enumerate wildcard children.
+        """
+        name = name.strip().rstrip(".").lower()
+        if name.startswith("*."):
+            if self.config.get("no_wildcards") or self.target == self.root_domain:
+                return None
+            suffix = name[2:]
+            prefix, sep, parent = self.target.partition(".")
+            return self.target if sep and parent == suffix else None
+        return name if self._matches_requested_scope(name) else None
+
     async def run(self) -> dict:
         tasks = [
             self._query_crtsh(),
@@ -65,11 +81,9 @@ class CertIntelligence:
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
                     entry = entry.strip()
-                    if self.config.get("no_wildcards") and entry.startswith("*."):
-                        continue
-                    entry = entry.lstrip("*.")
-                    if entry and self._matches_requested_scope(entry):
-                        self.found_subdomains.add(entry)
+                    matched = self._matched_cert_hostname(entry)
+                    if matched:
+                        self.found_subdomains.add(matched)
 
             self.console.print(f"    [dim]crt.sh: {len(certs)} certificates found[/dim]")
 
@@ -90,11 +104,9 @@ class CertIntelligence:
                 name_value = cert.get("name_value", "")
                 for entry in name_value.splitlines():
                     entry = entry.strip()
-                    if self.config.get("no_wildcards") and entry.startswith("*."):
-                        continue
-                    entry = entry.lstrip("*.")
-                    if entry and self._matches_requested_scope(entry):
-                        self.found_subdomains.add(entry)
+                    matched = self._matched_cert_hostname(entry)
+                    if matched:
+                        self.found_subdomains.add(matched)
 
         except Exception:
             pass
@@ -131,10 +143,9 @@ class CertIntelligence:
                             names = parsed.get("names", [])
                         names = names or hit.get("names") or []
                         for name in names:
-                            if self._matches_requested_scope(name.lstrip("*.")):
-                                if self.config.get("no_wildcards") and name.startswith("*."):
-                                    continue
-                                self.found_subdomains.add(name.lstrip("*."))
+                            matched = self._matched_cert_hostname(name)
+                            if matched:
+                                self.found_subdomains.add(matched)
 
                     self.console.print(f"    [dim]Censys (Platform API): {len(hits)} cert results[/dim]")
                     return
@@ -159,8 +170,9 @@ class CertIntelligence:
                 for hit in hits:
                     names = hit.get("parsed", {}).get("names", [])
                     for name in names:
-                        if self._matches_requested_scope(name.lstrip("*.")):
-                            self.found_subdomains.add(name.lstrip("*."))
+                        matched = self._matched_cert_hostname(name)
+                        if matched:
+                            self.found_subdomains.add(matched)
 
                 self.console.print(f"    [dim]Censys (legacy): {len(hits)} cert hits[/dim]")
 
