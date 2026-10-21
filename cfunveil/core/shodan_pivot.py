@@ -7,6 +7,7 @@ import asyncio
 import shodan
 from rich.console import Console
 from core.shodan_evidence import describe_shodan_match
+from core.shodan_query_metrics import ShodanQueryMetrics
 
 
 # CloudFlare's ASN to exclude from results
@@ -21,6 +22,7 @@ class ShodanPivot:
         self.console = console
         self.api = shodan.Shodan(config["shodan_key"])
         self.found_ips: dict[str, dict] = {}
+        self.query_metrics = ShodanQueryMetrics()
         import logging
         self.logger = logging.getLogger("cfunveil.shodan")
         # allow overriding CF ASNs via config
@@ -72,7 +74,7 @@ class ShodanPivot:
                 self.console.print(f"    [dim yellow]Shodan {name} error: {e}[/dim yellow]")
                 self.logger.debug("Unexpected error in Shodan strategy %s: %s", name, e)
 
-        return {"ips": self.found_ips}
+        return {"ips": self.found_ips, "query_metrics": self.query_metrics.snapshot()}
 
     def _add_result(self, result: dict, *, strategy: str, query: str):
         """Accumulate compact banner evidence without promoting an origin lead.
@@ -155,6 +157,49 @@ class ShodanPivot:
                 observations.append(observation)
             else:
                 entry["shodan_observations_truncated"] += 1
+        return (ip, observation)
+
+    def _execute_query(self, query: str, *, strategy: str, limit: int,
+                       retry: bool = False):
+        """Keep existing queries and limits; record each logical search.
+
+        The retry helper's HTTP attempts and provider credit consumption are
+        not observable, so these are not reported as precise API call costs.
+        """
+        try:
+            if retry:
+                from core.utils import sync_retry
+                payload = sync_retry(
+                    self.api.search, query, limit=limit, attempts=3,
+                    exceptions=(shodan.APIError,),
+                )
+            else:
+                payload = self.api.search(query, limit=limit)
+            matches = payload.get("matches", []) if isinstance(payload, dict) else []
+            if not isinstance(matches, list):
+                raise ValueError("Shodan matches must be a list")
+            accepted = []
+            for match in matches:
+                retained = self._add_result(match, strategy=strategy, query=query)
+                if retained is not None:
+                    accepted.append(retained)
+            provider_total = payload.get("total") if isinstance(payload, dict) else None
+            if (
+                not isinstance(provider_total, int)
+                or isinstance(provider_total, bool)
+                or provider_total < 0
+            ):
+                provider_total = None
+            self.query_metrics.success(
+                strategy=strategy, query=query, limit=limit,
+                matches=matches, accepted=accepted, provider_total=provider_total,
+            )
+        except Exception as exc:
+            self.query_metrics.failure(
+                strategy=strategy, query=query, limit=limit,
+                error_type=type(exc).__name__,
+            )
+            raise
 
     # ── Search Strategy 1: SSL Cert Pivot (Most Reliable) ────────────
     def _ssl_cert_pivot(self):
@@ -170,10 +215,7 @@ class ShodanPivot:
 
         for query in queries:
             try:
-                from core.utils import sync_retry
-                results = sync_retry(self.api.search, query, limit=100, attempts=3, exceptions=(shodan.APIError,))
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="ssl_certificate", query=query)
+                self._execute_query(query, strategy="ssl_certificate", limit=100, retry=True)
             except shodan.APIError as e:
                 self.logger.debug("SSL cert pivot query failed: %s", e)
             except Exception as e:
@@ -189,10 +231,7 @@ class ShodanPivot:
 
         for query in queries:
             try:
-                from core.utils import sync_retry
-                results = sync_retry(self.api.search, query, limit=100, attempts=3, exceptions=(shodan.APIError,))
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="hostname", query=query)
+                self._execute_query(query, strategy="hostname", limit=100, retry=True)
             except shodan.APIError as e:
                 self.logger.debug("Hostname search failed: %s", e)
             except Exception as e:
@@ -208,9 +247,7 @@ class ShodanPivot:
 
         for query in queries:
             try:
-                results = self.api.search(query, limit=50)
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="http_content", query=query)
+                self._execute_query(query, strategy="http_content", limit=50)
             except shodan.APIError as e:
                 self.logger.debug("HTTP content search failed: %s", e)
             except Exception as e:
@@ -222,9 +259,7 @@ class ShodanPivot:
             return
         query = f'http.html:"{copyright_string}" -org:"Cloudflare"'
         try:
-            results = self.api.search(query, limit=100)
-            for match in results.get("matches", []):
-                self._add_result(match, strategy="copyright", query=query)
+            self._execute_query(query, strategy="copyright", limit=100)
         except shodan.APIError as e:
             self.logger.debug("Copyright search failed: %s", e)
         except Exception as e:
@@ -265,6 +300,7 @@ class ShodanPivot:
 
             if not favicon_data:
                 self.logger.debug("No favicon data fetched for %s", self.target)
+                self.query_metrics.skipped(strategy="favicon_hash", reason="favicon_unavailable")
                 return
 
             # Compute Shodan-compatible MurmurHash from base64-encoded favicon
@@ -275,9 +311,7 @@ class ShodanPivot:
 
             query = f'http.favicon.hash:{favicon_hash} -org:"Cloudflare"'
             try:
-                results = self.api.search(query, limit=50)
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="favicon_hash", query=query)
+                self._execute_query(query, strategy="favicon_hash", limit=50)
             except shodan.APIError as e:
                 self.logger.debug("Favicon search failed: %s", e)
             except Exception as e:
@@ -298,9 +332,7 @@ class ShodanPivot:
 
         for query in queries:
             try:
-                results = self.api.search(query, limit=50)
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="http_headers", query=query)
+                self._execute_query(query, strategy="http_headers", limit=50)
             except Exception:
                 pass
 
@@ -322,9 +354,7 @@ class ShodanPivot:
         for asn in list(seen_asns)[:3]:  # Limit to 3 ASNs
             try:
                 query = f'asn:{asn} hostname:"{self.root_domain}"'
-                results = self.api.search(query, limit=50)
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="asn", query=query)
+                self._execute_query(query, strategy="asn", limit=50)
             except Exception:
                 pass
 
@@ -344,9 +374,7 @@ class ShodanPivot:
             try:
                 # Require hostname to match or we'll get too much noise
                 query = f'ssl.jarm:{j_hash} hostname:"{self.root_domain}" -org:"Cloudflare"'
-                results = self.api.search(query, limit=50)
-                for match in results.get("matches", []):
-                    self._add_result(match, strategy="jarm", query=query)
+                self._execute_query(query, strategy="jarm", limit=50)
             except Exception as e:
                 self.logger.debug("JARM search failed for hash %s: %s", j_hash, e)
 
