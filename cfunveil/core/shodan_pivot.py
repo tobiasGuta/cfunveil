@@ -7,7 +7,7 @@ import asyncio
 import shodan
 from rich.console import Console
 from core.shodan_evidence import describe_shodan_match
-from core.shodan_query_metrics import ShodanQueryMetrics
+from core.shodan_query_metrics import ShodanQueryMetrics, _banner_key
 
 
 # CloudFlare's ASN to exclude from results
@@ -192,6 +192,7 @@ class ShodanPivot:
         whose legacy single-page limit was 50.
         """
         page_limit = 100 if self.max_pages > 1 else limit
+        previous_page_evidence = None
         for page in range(1, self.max_pages + 1):
             if page > 1:
                 # Charge budget BEFORE the search call, including a failed
@@ -204,16 +205,18 @@ class ShodanPivot:
             try:
                 if page == 1 and retry:
                     from core.utils import sync_retry
+                    args = {"limit": limit} if self.max_pages == 1 else {"page": 1}
                     payload = sync_retry(
-                        self.api.search, query, limit=page_limit, attempts=3,
-                        exceptions=(shodan.APIError,),
+                        self.api.search, query, attempts=3,
+                        exceptions=(shodan.APIError,), **args,
                     )
-                elif page == 1:
-                    payload = self.api.search(query, limit=page_limit)
+                elif self.max_pages == 1:
+                    payload = self.api.search(query, limit=limit)
                 else:
-                    payload = self.api.search(
-                        query, page=page, limit=page_limit,
-                    )
+                    # Shodan's documented pagination API uses 'page'.
+                    # Sending the SDK-specific 'limit' parameter alongside
+                    # 'page' can yield repeated first-page results.
+                    payload = self.api.search(query, page=page)
                 if not isinstance(payload, dict):
                     raise ValueError("Shodan search response must be an object")
                 matches = payload.get("matches", [])
@@ -238,6 +241,9 @@ class ShodanPivot:
                     limit=page_limit, matches=matches, accepted=accepted,
                     provider_total=provider_total,
                 )
+                page_evidence = frozenset(
+                    _banner_key(ip, observation) for ip, observation in accepted
+                )
             except Exception as exc:
                 self.query_metrics.failure(
                     strategy=strategy, query=query, page=page,
@@ -257,6 +263,17 @@ class ShodanPivot:
                 else:
                     self.query_metrics.mark_stop("short_page")
                 break
+
+            # Do not spend more credits if a provider or intermediary
+            # returned the same complete banner set despite changing 'page'.
+            # This comparison is within the SAME query, not across queries.
+            if (
+                page > 1 and len(matches) == 100
+                and page_evidence and page_evidence == previous_page_evidence
+            ):
+                self.query_metrics.mark_stop("repeated_page_results")
+                break
+            previous_page_evidence = page_evidence
 
             # Only follow full-sized pages. A partial page with total >100
             # must not trick us into skipping unseen first-page entries.
