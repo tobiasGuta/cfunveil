@@ -193,12 +193,19 @@ class ReconEngine:
                 self.console.print("[bold green][2/6][/bold green] SSL Certificate Transparency (crt.sh + Censys)...")
                 from core.cert_intel import CertIntelligence
                 cert_intel = CertIntelligence(
-                    self.root_domain, self.config, self.console, session
+                    self.root_domain, self.config, self.console, session, target=self.target
                 )
                 cert_results = await cert_intel.run()
 
+                from core.dns_enum import is_cloudflare_ip
                 for ip in cert_results.get("ips", []):
-                    self._add_ip(ip, "SSL-Cert", category="related")
+                    records = cert_results.get("records", {}).get(ip, [])
+                    exact = any(r.get("domain") == self.target for r in records)
+                    category = (
+                        "cdn" if is_cloudflare_ip(ip)
+                        else "candidate" if exact else "related"
+                    )
+                    self._add_ip(ip, "SSL-Cert", {"records": records}, category=category)
                 self.subdomains.update(cert_results.get("subdomains", []))
                 self.console.print(f"    [dim]Found {len(cert_results.get('ips', []))} IPs from cert data[/dim]")
                 self.completed_modules.add('ssl')
@@ -310,7 +317,7 @@ class ReconEngine:
             results["asn_data"] = asn_results
             # ASN information enriches observed addresses but never creates leads.
             self.console.print(
-                f"    [dim]Resolved ASN for {len(asn_results.get('resolved', {}))} IPs[/dim]"
+                f"    [dim]Resolved ASN for {len(asn_results.get('resolved', {}))} exact-target candidate IPs[/dim]"
             )
 
             # ── Module 6: Origin Validation ─────────────────────────
