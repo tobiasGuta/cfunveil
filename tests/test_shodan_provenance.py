@@ -280,3 +280,74 @@ def test_optional_deep_strategies_keep_query_provenance_without_network():
     }
     assert {ob["query"] for ob in observations if ob["strategy"] != "hostname"} == set(searches)
     assert all(ob["relation"] == "related_hostname" for ob in observations)
+
+
+
+@pytest.mark.asyncio
+async def test_same_ip_shodan_context_survives_without_promoting_sources_or_scores(
+    tmp_path, monkeypatch,
+):
+    from core.engine import ReconEngine
+    from core.dns_enum import DNSEnumerator
+    from core.cert_intel import CertIntelligence
+    from core.historical import HistoricalSources
+    from core.asn_intel import ASNIntelligence
+
+    monkeypatch.chdir(tmp_path)
+    target = "api.example.net"
+    pivot = ShodanPivot(
+        target, "example.net",
+        {"shodan_key": "offline-placeholder"}, Console(quiet=True),
+    )
+    for ip, hostname in (
+        ("8.8.8.8", target),
+        ("104.18.37.240", target),
+        ("9.9.9.9", "portal.example.net"),
+    ):
+        pivot._add_result(
+            {"ip_str": ip, "hostnames": [hostname], "port": 443},
+            strategy="hostname", query=f'hostname:"{target}"',
+        )
+
+    monkeypatch.setattr(DNSEnumerator, "run", AsyncMock(return_value={
+        "ips": ["8.8.8.8"],
+        "cloudflare_ips": ["104.18.37.240"],
+        "records": {
+            "8.8.8.8": [{"domain": target, "record_type": "A"}],
+            "104.18.37.240": [{"domain": target, "record_type": "A"}],
+        },
+        "subdomains": [target],
+    }))
+    monkeypatch.setattr(CertIntelligence, "run", AsyncMock(return_value={
+        "ips": [], "records": {}, "subdomains": [],
+    }))
+    monkeypatch.setattr(HistoricalSources, "run", AsyncMock(
+        return_value={"ips": {}},
+    ))
+    monkeypatch.setattr(ASNIntelligence, "run", AsyncMock(
+        return_value={"resolved": {}, "sibling_ips": []},
+    ))
+    monkeypatch.setattr(ShodanPivot, "run", AsyncMock(
+        return_value={"ips": pivot.found_ips},
+    ))
+    scan = ReconEngine({
+        "target": target, "shodan_key": "offline-placeholder",
+        "threads": 3, "timeout": 3, "validate": False,
+    }, Console(quiet=True))
+    report = await scan.run()
+
+    assert set(report["ips"]) == {"8.8.8.8"}
+    assert set(report["cdn_edges"]) == {"104.18.37.240"}
+    assert set(report["related_infrastructure"]) == {"9.9.9.9"}
+
+    candidate = report["ips"]["8.8.8.8"]
+    assert candidate["sources"] == ["DNS"]  # no unearned Shodan ranking bonus
+    assert candidate["confidence"] == 0
+    assert candidate["context_sources"] == ["Shodan"]
+    assert candidate["details"]["shodan_evidence"][0]["relation"] == "exact_target_hostname"
+
+    cdn = report["cdn_edges"]["104.18.37.240"]
+    assert cdn["sources"] == ["DNS"]
+    assert cdn["context_sources"] == ["Shodan"]
+    assert cdn["details"]["shodan_evidence"][0]["query"] == f'hostname:"{target}"'
+    assert report["related_infrastructure"]["9.9.9.9"]["sources"] == ["Shodan"]
