@@ -212,6 +212,7 @@ class ReconEngine:
             "related_infrastructure": {},
             "cdn_edges": {},
             "shodan_query_metrics": [],
+            "shodan_pagination_budget": None,
             "validated_origins": [],
             "asn_data": {},
             "summary": {}
@@ -356,6 +357,7 @@ class ReconEngine:
                     payload = payload or {}
                     if name == "shodan":
                         results["shodan_query_metrics"] = payload.get("query_metrics", [])
+                        results["shodan_pagination_budget"] = payload.get("pagination_budget")
                     if name == "historical":
                         found = payload.get("ips", {})
                         iterator = found.items() if isinstance(found, dict) else ((ip, {}) for ip in found)
@@ -369,6 +371,7 @@ class ReconEngine:
                 if shodan:
                     shodan_results = await shodan.run()
                     results["shodan_query_metrics"] = shodan_results.get("query_metrics", [])
+                    results["shodan_pagination_budget"] = shodan_results.get("pagination_budget")
                     for ip, meta in shodan_results.get("ips", {}).items():
                         self._add_ip(ip, "Shodan", meta, category="related")
                     self.console.print(
