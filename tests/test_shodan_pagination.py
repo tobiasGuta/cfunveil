@@ -71,7 +71,7 @@ def test_opt_in_queries_first_request_complete_page_before_page_two():
 
     pivot.api = Fake()
     pivot._execute_query("offline query", strategy="http_content", limit=50)
-    assert calls == [{"limit": 100}, {"page": 2, "limit": 100}, {"page": 3, "limit": 100}]
+    assert calls == [{"page": 1}, {"page": 2}, {"page": 3}]
     rows = pivot.query_metrics.snapshot()
     assert [r["page"] for r in rows] == [1, 2, 3]
     assert [r["returned_matches"] for r in rows] == [100, 100, 5]
@@ -121,7 +121,7 @@ def test_per_query_cap_prevents_fetching_page_four_even_with_budget():
 
     pivot.api = Fake()
     pivot._execute_query("offline", strategy="hostname", limit=100)
-    assert calls == [{"limit": 100}, {"page": 2, "limit": 100}]
+    assert calls == [{"page": 1}, {"page": 2}]
     assert pivot.query_metrics.snapshot()[-1]["pagination_stop_reason"] == "per_query_page_cap"
     assert pivot.extra_page_requests_used == 1
 
@@ -140,7 +140,7 @@ def test_failure_on_extra_page_consumes_one_attempt_and_no_retry():
     pivot.api = Fake()
     with pytest.raises(shodan.APIError):
         pivot._execute_query("offline", strategy="hostname", limit=100, retry=True)
-    assert calls == [{"limit": 100}, {"page": 2, "limit": 100}]
+    assert calls == [{"page": 1}, {"page": 2}]
     assert pivot.extra_page_requests_used == 1
     rows = pivot.query_metrics.snapshot()
     assert [r["status"] for r in rows] == ["success", "error"]
@@ -149,7 +149,7 @@ def test_failure_on_extra_page_consumes_one_attempt_and_no_retry():
     assert len(pivot.found_ips) == 100
     # Even after a failed extra page the scan cannot overspend its budget.
     pivot._execute_query("offline-other", strategy="hostname", limit=100)
-    assert calls[-1] == {"limit": 100}
+    assert calls[-1] == {"page": 1}
     assert pivot.query_metrics.snapshot()[-1]["pagination_stop_reason"] == "global_extra_page_budget"
 
 
@@ -231,3 +231,63 @@ async def test_engine_preserves_pagination_budget_both_modes(no_wait, tmp_path, 
     result = await engine.run()
     assert result["shodan_pagination_budget"] == budget
     assert result["ips"] == {}
+
+
+
+def test_provider_ignoring_page_would_be_caught_as_repeated_content():
+    pivot = make_pivot(max_pages=5, budget=4)
+    calls = []
+
+    class Fake:
+        def search(self, query, **kwargs):
+            calls.append(kwargs)
+            # Deliberate simulation of a provider ignoring pagination.
+            # Previous implementation could silently accept this result
+            # until all extra-page credits were exhausted.
+            return {"matches": banners(1), "total": 9999}
+
+    pivot.api = Fake()
+    pivot._execute_query("offline", strategy="ssl_certificate", limit=100)
+    assert calls == [{"page": 1}, {"page": 2}]
+    assert pivot.extra_page_requests_used == 1
+    rows = pivot.query_metrics.snapshot()
+    assert len(rows) == 2
+    assert rows[1]["incremental_new_ips"] == 0
+    assert rows[1]["pagination_stop_reason"] == "repeated_page_results"
+    assert len(pivot.found_ips) == 100
+
+
+def test_paginated_requests_use_documented_shodan_page_not_limit():
+    """Assert against real SDK request construction, without HTTP/network."""
+    pivot = make_pivot(max_pages=3, budget=1)
+    sent = []
+
+    def fake_request(url, parameters, **kwargs):
+        sent.append((url, parameters.copy()))
+        return {
+            "matches": banners(parameters.get("page", 1)),
+            "total": 300,
+        }
+
+    pivot.api._request = fake_request
+    pivot._execute_query("offline", strategy="hostname", limit=50)
+    assert [item[1]["page"] for item in sent] == [1, 2]
+    assert all("limit" not in params for _, params in sent)
+    assert all(url == "/shodan/host/search" for url, _ in sent)
+    assert pivot.query_metrics.snapshot()[-1]["pagination_stop_reason"] == "global_extra_page_budget"
+
+
+def test_default_sdk_request_remains_legacy_bounded_limit():
+    pivot = make_pivot()
+    sent = []
+
+    def fake_request(url, params, **kwargs):
+        sent.append((url, params.copy()))
+        return {"matches": banners(1, 50), "total": 1000}
+
+    pivot.api._request = fake_request
+    pivot._execute_query("offline", strategy="http_content", limit=50)
+    assert len(sent) == 1
+    assert sent[0][1]["limit"] == 50
+    assert sent[0][1]["page"] == 1
+    assert pivot.extra_page_requests_used == 0
