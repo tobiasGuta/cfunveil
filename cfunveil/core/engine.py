@@ -8,7 +8,11 @@ import os
 import re
 import asyncio
 from datetime import datetime, timezone
-from core.evidence import classify_target_evidence
+from core.evidence import (
+    _CURRENT_DNS_TYPES,
+    classify_target_evidence,
+    invalidate_restored_dns_evidence,
+)
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.live import Live
@@ -50,7 +54,19 @@ class ReconEngine:
             self.cdn_edges = state.get("cdn_edges", {})
             self.completed_modules = set(state.get("completed_modules", []))
             self.subdomains = set(state.get("subdomains", []))
-            self.console.print(f"[green][+] Restored {len(self.completed_modules)} completed modules[/green]")
+            # A checkpoint's DNS/cert-hostname address evidence is historical
+            # by definition. Preserve it as previous-run evidence, refresh both
+            # resolving modules, and avoid reusing a stale subdomain inventory.
+            for registry in (self.discovered_ips, self.related_ips, self.cdn_edges):
+                invalidate_restored_dns_evidence(
+                    registry, self.target, as_of=self.evidence_as_of,
+                )
+            self.completed_modules.difference_update({"dns", "ssl"})
+            self.subdomains.clear()
+            self.console.print(
+                "[green][+] Restored prior evidence; DNS and certificate-hostname "
+                "addresses will be refreshed[/green]"
+            )
 
     def _save_session(self):
         """Atomically checkpoint discoveries without ever clearing them."""
@@ -96,7 +112,24 @@ class ReconEngine:
         if source not in data["sources"]:
             data["sources"].append(source)
         for record in (extra or {}).get("records", []):
-            if isinstance(record, dict) and record not in data["records"]:
+            if not isinstance(record, dict):
+                continue
+            if (
+                record.get("record_type") in _CURRENT_DNS_TYPES
+                and record.get("observation_status") != "previous_run"
+            ):
+                # A new observation supersedes a copy of this same exact
+                # record retained from an earlier scan. Bound report size.
+                data["records"] = [
+                    old for old in data["records"]
+                    if not (
+                        isinstance(old, dict)
+                        and old.get("observation_status") == "previous_run"
+                        and old.get("record_type") == record.get("record_type")
+                        and old.get("domain") == record.get("domain")
+                    )
+                ]
+            if record not in data["records"]:
                 data["records"].append(dict(record))
         if extra:
             details = {
