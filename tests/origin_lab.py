@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from aiohttp import ClientSession, web
+from aiohttp import ClientSession, TCPConnector, web
 from rich.console import Console
 
 from core.engine import ReconEngine
@@ -181,7 +181,7 @@ async def run_benchmark():
                 "core.headers_probe.ssl.create_default_context",
                 return_value=client_ssl,
             ):
-                async with ClientSession(trust_env=False) as session:
+                async with ClientSession(connector=TCPConnector(ssl=client_ssl), trust_env=False) as session:
                     validator = _LabValidator(
                         TARGET, "lab.test", Console(quiet=True), session,
                         authorized_cidrs=["127.0.0.0/24"],
