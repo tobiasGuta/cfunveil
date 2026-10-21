@@ -4,6 +4,37 @@
 
 The core purpose of `cfunveil` is to accurately uncover real origin IP addresses hidden behind reverse proxies and CDNs (Content Delivery Networks) like Cloudflare. It chains together multiple OSINT and active reconnaissance modules—such as SSL Certificate Transparency logs, historical DNS records, Shodan pivoting, and autonomous ASN intelligence—to map out potential origins. A probabilistic validation engine then actively probes those IPs to determine a confidence score based on TLS matches, HTTP response fingerprints, and other correlating signals. This significantly reduces the noise typical in origin discovery and enables researchers to perform direct infrastructure assessments bypassing WAF protections.
 
+## Reliability and authorization update (October 2026)
+
+CFUnveil now separates **passive origin candidates**, **heuristic ranking**, and
+**verified direct-application matches**.
+
+- Fresh scans and resumable sessions preserve accumulated evidence correctly.
+- TLS connections to candidate IPs preserve the target's **Host header and SNI**,
+  verify the hostname's certificate, and confirm the connected peer. Redirects
+  are recorded but are **never followed**.
+- Candidate validation compares a bounded response to a normal HTTPS baseline.
+  A score is **not** a calibrated probability. Matching a direct application is
+  **not** itself proof of a WAF bypass or security impact.
+- Direct-IP probes are disabled without an explicitly permitted `--authorized-cidr`
+  range. Passive discovery still works without this flag. CIDRs are network
+  scope boundaries, not an assertion that a bug bounty program permits testing.
+- Reports distinguish `verified_direct_application`, `related_service`,
+  `redirect_only`, `cdn_or_proxy`, `out_of_scope`, and other states.
+
+Example for an **explicitly authorized** single public origin IP:
+
+```bash
+python cfunveil/main.py -t example.com --authorized-cidr 8.8.8.8/32 -o evidence.json
+```
+
+Replace the example address with an IP specifically approved for your engagement.
+Without such approval, run passive discovery instead:
+
+```bash
+python cfunveil/main.py -t example.com --no-validate -o leads.json
+```
+
 ## What's New (April 2026)
 
 - **Session Persistence & Resume**: For large, long-running scans that get interrupted, `cfunveil` now automatically persists state to a session file (e.g., `cfunveil_target_com_session.json`). Use `--resume` or accept the interactive prompt to pick up exactly where the scan was aborted, skipping completed intelligence modules.
@@ -98,50 +129,50 @@ Censys recently transitioned their API authentication. Instead of the legacy ID 
 
 ```bash
 # Basic scan (free sources only)
-python main.py -t example.com
+python cfunveil/main.py -t example.com
 
 # Full scan with Shodan premium
-python main.py -t api-cloudfront.example.com --shodan-key YOUR_KEY
+python cfunveil/main.py -t api-cloudfront.example.com --shodan-key YOUR_KEY
 
 # Full scan with all sources
-python main.py -t example.com \
+python cfunveil/main.py -t example.com \
   --shodan-key YOUR_SHODAN_KEY \
   --st-key YOUR_SECURITYTRAILS_KEY \
   --output report.html
 
 # Deep scan (more Shodan credits, more thorough)
-python main.py -t example.com --shodan-key KEY --deep
+python cfunveil/main.py -t example.com --shodan-key KEY --deep
 
 # Verbose Explanations (show category breakdowns and detailed justifications)
-python main.py -t example.com --verbose
+python cfunveil/main.py -t example.com --verbose
 
 # Fast scan without validation (enumerate only)
-python main.py -t example.com --shodan-key KEY --no-validate -T 100
+python cfunveil/main.py -t example.com --shodan-key KEY --no-validate -T 100
 
 # Extract IPs from a saved raw email headers file and include them in the scan
-python main.py -t example.com --email-headers-file ./headers.txt
+python cfunveil/main.py -t example.com --email-headers-file ./headers.txt
 
 # Fetch recent headers via IMAP (use with care; provide credentials interactively)
-python main.py -t example.com --imap-host imap.example.com --imap-user me
-# (Or pass password securely via env var: IMAP_PASS=secret python main.py ...)
+python cfunveil/main.py -t example.com --imap-host imap.example.com --imap-user me
+# (Or pass password securely via env var: IMAP_PASS=secret python cfunveil/main.py ...)
 
 # Resume an interrupted scan
-python main.py -t example.com --resume
+python cfunveil/main.py -t example.com --resume
 
 # Filter out wildcard certificates and perform a full scan
-python main.py -t example.com --all --no-wildcards
+python cfunveil/main.py -t example.com --all --no-wildcards
 
 # Search for sites that include a unique copyright string (Shodan deep scan)
-python main.py -t example.com --shodan-key KEY --deep --copyright "© MyCompany"
+python cfunveil/main.py -t example.com --shodan-key KEY --deep --copyright "© MyCompany"
 
 # Debug mode with verbose logging
-python main.py -t example.com --debug
+python cfunveil/main.py -t example.com --debug
  
 # Run all available discovery modules (best-effort). Missing API keys or services will be skipped.
-python main.py -t example.com --all
+python cfunveil/main.py -t example.com --all
 
 # Use Censys Platform API PAT (preferred) instead of id/secret
-python main.py -t example.com --censys-pat YOUR_PAT --censys-org YOUR_ORG_ID
+python cfunveil/main.py -t example.com --censys-pat YOUR_PAT --censys-org YOUR_ORG_ID
 ```
 
 ## API Keys
@@ -157,7 +188,7 @@ You can also use environment variables or a `.env` file (see above):
 ```bash
 export SHODAN_API_KEY=your_key
 export ST_API_KEY=your_key
-python main.py -t example.com
+python cfunveil/main.py -t example.com
 ```
 
 If an API key or optional library is not available, that module will be skipped and the tool will continue using other sources.
@@ -175,16 +206,16 @@ Notes on Censys Platform API and rate limits:
 | 3 | Shodan Pivot | Shodan API | SSL pivot, favicon hash, hostname |
 | 4 | Historical Sources | HackerTarget, OTX, urlscan | Old A records before CF |
 | 5 | ASN Intelligence | ipinfo.io, RDAP | Cloud provider, CIDR expansion |
-| 6 | Origin Validator | Direct HTTP probe | Confidence scoring 0-100% |
+| 6 | Origin Validator | Authorized direct HTTP/TLS probe | Heuristic ranking plus evidence-based status |
 
 ## Output Files
 
 ```bash
 # JSON report (for further processing)
-python main.py -t example.com --shodan-key KEY --output results.json
+python cfunveil/main.py -t example.com --shodan-key KEY --output results.json
 
 # HTML report (visual, shareable for bug bounty reports)
-python main.py -t example.com --shodan-key KEY --output report.html
+python cfunveil/main.py -t example.com --shodan-key KEY --output report.html
 ```
 
 ## Shodan Strategies Used
@@ -197,31 +228,37 @@ python main.py -t example.com --shodan-key KEY --output report.html
 6. **ASN Expansion** — Finds sibling IPs in same ASN *(--deep)*
 7. **Copyright/String Dork** — Search for unique strings in HTTP bodies (Shodan/Censys) *(--deep)*
 
-## Confidence Scoring
+## Heuristic ranking and verification
 
-| Tier | Score Range | Meaning |
-|------|-------------|---------|
-| **High** | 80-100% | Almost certainly the origin — direct bypass likely with multiple correlating signals (e.g. TLS match + HTTP text) |
-| **Medium** | 50-79% | Likely origin or related infrastructure based on partial corroboration — test manually |
-| **Low** | 0-49% | Low confidence — historical, related ISPs, or unconfirmed noise |
+The ranking score is bounded between 0 and 1 (rendered as 0–100 points).
+It is a **lead-prioritization heuristic**, not a probability of being the origin.
+A high score does **not** imply confirmation.
 
-![Screenshot](https://raw.githubusercontent.com/tobiasGuta/cfunveil/main/Screenshot%202026-03-14%20175345.png)
+| Tier | Score | Meaning |
+|------|-------|---------|
+| High | 80–100 points | Stronger evidence; inspect verification status |
+| Medium | 50–79 points | Partial independent evidence |
+| Low | 0–49 points | Weak or inconclusive association |
 
-## After Finding the Origin
+`confirmed: true` is reserved for `verified_direct_application` evidence:
+an authorized HTTPS direct-IP connection, correct hostname/SNI and validated
+peer, plus an exact nontrivial response-body match against the hostname baseline.
+Even this does not establish a WAF bypass or reportable severity.
+
+## After Finding a Candidate
+
+Check the program's written authorization **before** making direct-IP requests.
+A correct DNS or historical match does not automatically put an IP in scope.
+When explicitly authorized, a TLS hostname-preserving request uses:
 
 ```bash
-# Test direct bypass (no WAF)
-curl -sk -H "Host: TARGET" https://ORIGIN_IP/ | head -50
-
-# Full port scan
-nmap -sV -p- --open ORIGIN_IP
-
-# Directory bruteforce bypassing WAF
-ffuf -u https://ORIGIN_IP/FUZZ -H "Host: TARGET" -w /path/to/wordlist.txt
-
-# Check if IP-based auth bypass works
-curl -sk -H "Host: TARGET" -H "X-Forwarded-For: 127.0.0.1" https://ORIGIN_IP/admin
+curl --resolve example.com:443:8.8.8.8 https://example.com/
 ```
+
+This example is read-only and preserves hostname verification. Never infer an
+authorization to port-scan, brute-force, or probe sensitive endpoints from
+finding a candidate IP.
+
 
 ---
 
