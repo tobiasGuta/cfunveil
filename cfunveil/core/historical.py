@@ -239,7 +239,9 @@ class HistoricalSources:
             }
 
             # Historical DNS records
-            url = f"https://api.securitytrails.com/v1/history/{self.root_domain}/dns/a"
+            # A request for a specific hostname must query that hostname's
+            # historical A records, not only the registrable-domain apex.
+            url = f"https://api.securitytrails.com/v1/history/{self.target}/dns/a"
             from core.utils import http_get_with_retry
             resp = await http_get_with_retry(self.session, url, headers=headers, attempts=3, timeout=10)
             if not resp or resp.status != 200:
@@ -251,7 +253,7 @@ class HistoricalSources:
                 for value in record.get("values", []):
                     ip = value.get("ip", "")
                     if ip:
-                        self._add_historical_ip(ip, self.root_domain, "securitytrails", first_seen=record.get("first_seen"), last_seen=record.get("last_seen"))
+                        self._add_historical_ip(ip, self.target, "securitytrails", first_seen=record.get("first_seen"), last_seen=record.get("last_seen"))
 
             self.console.print(f"    [dim]SecurityTrails: {len(records)} historical A records[/dim]")
 
