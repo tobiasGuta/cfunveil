@@ -28,7 +28,7 @@ def test_clean_start_keeps_discovered_ips_and_root_domain(tmp_path, monkeypatch)
     engine.completed_modules.add("dns")
     engine._save_session()
     assert "8.8.8.8" in engine.discovered_ips
-    state = json.loads((tmp_path / "cfunveil_example_com_session_v5.json").read_text())
+    state = json.loads((tmp_path / "cfunveil_example_com_session_v6.json").read_text())
     assert state["target"] == "example.com"
     assert "8.8.8.8" in state["discovered_ips"]
 
@@ -49,9 +49,9 @@ def test_resume_preserves_prior_evidence(tmp_path, monkeypatch):
 
 def test_resume_rejects_mismatched_target(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    path = tmp_path / "cfunveil_example_com_session_v5.json"
+    path = tmp_path / "cfunveil_example_com_session_v6.json"
     path.write_text(json.dumps({
-        "version": 5, "target": "another.com",
+        "version": 6, "target": "another.com",
         "discovered_ips": {}, "completed_modules": [], "subdomains": [],
     }))
     with pytest.raises(ValueError, match="mismatch"):
@@ -129,16 +129,16 @@ def test_exact_target_cloudflare_edge_retains_sibling_history():
 
 def test_new_checkpoint_version_does_not_resume_old_classifications(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    old = tmp_path / "cfunveil_api-cloudfront_life360_com_session_v4.json"
+    old = tmp_path / "cfunveil_api-cloudfront_life360_com_session_v5.json"
     old.write_text(json.dumps({
-        "version": 4, "target": "api-cloudfront.life360.com",
+        "version": 5, "target": "api-cloudfront.life360.com",
         "cdn_edges": {"172.64.150.73": {"sources": ["Historical-DNS"]}},
         "completed_modules": ["dns"],
     }))
     engine = ReconEngine({"target": "api-cloudfront.life360.com", "resume": True}, Console())
     assert engine.cdn_edges == {}
     assert not engine.completed_modules
-    assert engine.session_file.endswith("_session_v5.json")
+    assert engine.session_file.endswith("_session_v6.json")
 
 
 def test_registrable_domain_honors_multilabel_and_private_suffix_boundaries():
@@ -287,3 +287,17 @@ async def test_resume_reobservation_does_not_accumulate_duplicate_dns_records(tm
         assert report["ips"][ip]["records"] == [
             {"domain": target, "record_type": "A"},
         ]
+
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_insecure_direct_verification_before_network(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    engine = ReconEngine({
+        "target": "example.com", "validate": True,
+        "verify_ssl": False, "threads": 1, "timeout": 2,
+        "authorized_cidrs": ["8.8.8.8/32"],
+    }, Console(quiet=True))
+    with pytest.raises(ValueError, match="--no-validate"):
+        await engine.run()
+    assert not list(tmp_path.iterdir())
