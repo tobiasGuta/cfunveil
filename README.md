@@ -6,7 +6,7 @@ CFUnveil gathers passive intelligence to identify possible origin IP addresses a
 
 ## Reliability and authorization update (October 2026)
 
-CFUnveil now separates **exact-host origin leads**, **CDN edge addresses**,
+CFUnveil now separates **exact-host origin leads**, **target-associated CDN edge addresses**,
 **related infrastructure**, **heuristic ranking**, and **verified direct-application matches**.
 
 On an exact subdomain scan, DNS collection is limited to that requested host
@@ -17,8 +17,10 @@ urlscan results are excluded. JSON reports provide separate `ips`,
 `cdn_edges`, and `related_infrastructure` groups, each with source evidence
 and associated DNS names when available. A related hostname is **not**
 authorization to test that service.
+Cloudflare IPs seen **only** with sibling-domain evidence remain related infrastructure,
+not CDN-edge evidence for the requested hostname.
 
-New scan checkpoints use a `_session_v2.json` suffix so old, overinclusive
+New scan checkpoints use a `_session_v3.json` suffix so old, overinclusive
 scan results cannot silently reappear after `--resume`.
 
 - Fresh scans and resumable sessions preserve accumulated evidence correctly.
