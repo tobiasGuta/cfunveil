@@ -9,7 +9,12 @@ CFUnveil gathers passive intelligence to identify possible origin IP addresses a
 CFUnveil now separates **exact-host origin leads**, **target-associated CDN edge addresses**,
 **related infrastructure**, **heuristic ranking**, and **verified direct-application matches**.
 
-Domain boundaries use an **offline bundled Public Suffix List**, including private tenant suffixes, so `api.example.co.uk` cannot silently become a `co.uk`-wide scan. Unrecognized suffixes fail closed rather than requesting unrelated domains.\n\nOn an exact subdomain scan, DNS collection is limited to that requested host
+Domain boundaries use an **offline bundled Public Suffix List**, including private tenant suffixes, so `api.example.co.uk` cannot silently become a `co.uk`-wide scan. Unrecognized suffixes fail closed rather than requesting unrelated domains.\n\nOn registrable-domain apex scans, common sibling hostnames can still be
+enumerated, but only IPs with exact-apex DNS attribution become origin
+leads or target-associated CDN edges. Sibling-only and unattributed IPs stay
+in the related-infrastructure evidence section.
+
+On an exact subdomain scan, DNS collection is limited to that requested host
 and its direct DNS aliases. SPF email ranges, nameserver infrastructure and
 ASN-neighbor expansion do not create origin leads. Historical/CT evidence
 must retain a matching hostname, and third-party resources embedded in
@@ -20,7 +25,7 @@ authorization to test that service.
 Cloudflare IPs seen **only** with sibling-domain evidence remain related infrastructure,
 not CDN-edge evidence for the requested hostname.
 
-New scan checkpoints use a `_session_v5.json` suffix so old, overinclusive
+New scan checkpoints use a `_session_v6.json` suffix so old, overinclusive
 scan results cannot silently reappear after `--resume`. When resuming a v5
 checkpoint, saved DNS and certificate-derived IP records are marked as
 `previous_dns_observed`, not `current_dns_observed`. The resolving modules
@@ -61,6 +66,9 @@ success at finding a hidden production origin. It never probes bug bounty hosts.
 
 
 - Fresh scans and resumable sessions preserve accumulated evidence correctly.
+- `--insecure` is restricted to passive-source collection with
+  `--no-validate`. Active origin confirmation requires a certificate-verified
+  HTTPS baseline, including when the engine is invoked without the CLI.
 - TLS connections to candidate IPs preserve the target's **Host header and SNI**,
   verify the hostname's certificate, and confirm the connected peer. Redirects
   are recorded but are **never followed**.
@@ -139,7 +147,7 @@ Run tests locally:
 python -m pytest tests
 ```
 
-The repository includes a GitHub Actions workflow that runs syntax checks and isolated regression tests.
+The repository includes GitHub Actions syntax checks, isolated regression tests, an offline temporal discovery replay and a loopback HTTPS origin-verification benchmark.
 
 ---
 
