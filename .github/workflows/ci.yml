@@ -24,3 +24,5 @@ jobs:
         run: python -m compileall -q cfunveil tests
       - name: Run regression tests
         run: python -m pytest tests -q
+      - name: Run controlled origin benchmark
+        run: python scripts/run_origin_benchmark.py
