@@ -68,3 +68,77 @@ async def test_http_probe_disables_redirect_and_verifies_tls_name():
     assert kwargs["headers"]["Host"] == "example.com"
     assert kwargs["server_hostname"] == "example.com"
     assert isinstance(kwargs["ssl"], ssl.SSLContext)
+
+
+@pytest.mark.asyncio
+async def test_real_loopback_transport_read_and_no_redirect():
+    """Exercise real aiohttp connection bookkeeping without external traffic."""
+    from aiohttp import ClientSession, web
+
+    async def handler(request):
+        return web.Response(
+            status=302, headers={"Location": "https://should-not-be-fetched.invalid/"}
+        )
+
+    app = web.Application()
+    app.router.add_get("/", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    try:
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        async with ClientSession() as session:
+            p = HeadersProbe("example.com", Console(), session)
+            data = await p._request(f"http://127.0.0.1:{port}/", host="example.com")
+        assert data["status"] == 302
+        assert data["connected_ip"] == "127.0.0.1"
+        assert data["location"] == "https://should-not-be-fetched.invalid/"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_passive_json_helper_buffers_response_after_context():
+    from aiohttp import ClientSession, web
+    from core.utils import http_get_with_retry
+
+    async def handler(request):
+        return web.json_response({"answer": "ok"})
+
+    app = web.Application()
+    app.router.add_get("/", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    try:
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        async with ClientSession() as session:
+            result = await http_get_with_retry(session, f"http://127.0.0.1:{port}/")
+            assert result.status == 200
+            assert await result.json() == {"answer": "ok"}
+    finally:
+        await runner.cleanup()
+
+
+def test_html_report_escapes_data_and_scales_scores(tmp_path):
+    from output.reporter import generate_report
+
+    outfile = tmp_path / "result.html"
+    generate_report({
+        "summary": {"total_ips_found": 1},
+        "ips": {
+            "8.8.8.8": {
+                "confidence": 0.8, "confirmed": False,
+                "verification_status": "related_service",
+                "sources": ["<script>alert(1)</script>"],
+                "warnings": ['<img src=x onerror=alert(1)>'],
+            }
+        }
+    }, str(outfile), "example.com")
+    text = outfile.read_text()
+    assert "80/100" in text
+    assert "<script>alert(1)</script>" not in text
+    assert "&lt;script&gt;" in text
+    assert "&lt;img" in text
