@@ -137,3 +137,28 @@ def test_new_checkpoint_version_does_not_resume_old_classifications(tmp_path, mo
     assert engine.cdn_edges == {}
     assert not engine.completed_modules
     assert engine.session_file.endswith("_session_v4.json")
+
+
+def test_registrable_domain_honors_multilabel_and_private_suffix_boundaries():
+    from core.scope import registrable_domain
+
+    assert registrable_domain("api.life360.com") == "life360.com"
+    assert registrable_domain("api.example.co.uk") == "example.co.uk"
+    assert registrable_domain("service.customer.github.io") == "customer.github.io"
+    assert ReconEngine({"target": "api.example.co.uk"}, Console()).root_domain == "example.co.uk"
+    assert ReconEngine({"target": "service.customer.github.io"}, Console()).root_domain == "customer.github.io"
+
+
+@pytest.mark.parametrize("hostname", [
+    "co.uk", "github.io", "com", "localhost", "https://example.co.uk",
+])
+def test_public_suffix_or_non_domain_is_rejected_before_any_discovery(hostname):
+    from core.scope import registrable_domain
+    with pytest.raises(ValueError):
+        registrable_domain(hostname)
+
+
+def test_scope_helper_never_uses_remote_psl():
+    from core.scope import _EXTRACT
+    assert _EXTRACT.suffix_list_urls == ()
+    assert _EXTRACT.include_psl_private_domains is True
