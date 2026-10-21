@@ -21,7 +21,7 @@ class ReconEngine:
         self.config = config
         self.console = console
         self.target = config["target"].rstrip(".").lower()
-        if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9-]{2,63}", self.target):
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z0-9-]{2,63}", self.target):
             raise ValueError("target must be a valid domain name, not a URL or path")
         parts = self.target.rstrip(".").lower().split(".")
         if len(parts) < 2 or not all(parts):
