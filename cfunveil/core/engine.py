@@ -20,36 +20,49 @@ class ReconEngine:
         self.config = config
         self.console = console
         self.target = config["target"]
+        parts = self.target.rstrip(".").lower().split(".")
+        if len(parts) < 2 or not all(parts):
+            raise ValueError("target must be a domain name")
+        self.root_domain = ".".join(parts[-2:])
+        self.discovered_ips: dict[str, dict] = {}
         self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session.json"
-        
-        self.completed_modules = set()
-        self.subdomains = set()
+        self.completed_modules: set[str] = set()
+        self.subdomains: set[str] = set()
+
         if self.config.get("resume") and os.path.exists(self.session_file):
-            try:
-                with open(self.session_file, "r") as f:
-                    state = json.load(f)
-                    self.discovered_ips = state.get("discovered_ips", {})
-                    self.completed_modules = set(state.get("completed_modules", []))
-                    self.subdomains = set(state.get("subdomains", []))
-                self.console.print(f"[bold green][+] Resumed session from {self.session_file} ({len(self.completed_modules)} modules completed)[/bold green]")
-            except Exception as e:
-                self.console.print(f"[yellow][!] Failed to load session file: {e}[/yellow]")
+            with open(self.session_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if state.get("target") != self.target or state.get("version") != 1:
+                raise ValueError("Session target/version mismatch; start a new scan")
+            self.discovered_ips = state.get("discovered_ips", {})
+            self.completed_modules = set(state.get("completed_modules", []))
+            self.subdomains = set(state.get("subdomains", []))
+            self.console.print(f"[green][+] Restored {len(self.completed_modules)} completed modules[/green]")
 
     def _save_session(self):
+        """Atomically checkpoint discoveries without ever clearing them."""
+        import tempfile
         state = {
+            "version": 1,
+            "target": self.target,
             "discovered_ips": self.discovered_ips,
-            "completed_modules": list(self.completed_modules),
-            "subdomains": list(self.subdomains)
+            "completed_modules": sorted(self.completed_modules),
+            "subdomains": sorted(self.subdomains),
         }
+        temp_path = None
         try:
-            with open(self.session_file, "w") as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=".", prefix=".cfunveil-", delete=False
+            ) as f:
+                temp_path = f.name
                 json.dump(state, f)
-        except: pass
-        # Extract root domain from subdomain
-        parts = self.target.split(".")
-        self.root_domain = ".".join(parts[-2:]) if len(parts) > 2 else self.target
-
-        self.discovered_ips: dict[str, dict] = {}  # ip -> metadata
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.session_file)
+        except OSError as exc:
+            self.console.print(f"[yellow][!] Could not save session: {exc}[/yellow]")
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def _add_ip(self, ip: str, source: str, extra: dict = None):
         """Thread-safe IP registration with source tracking"""
@@ -177,58 +190,33 @@ class ReconEngine:
             )
 
             if self.config.get("no_wait"):
-                # Start long-running tasks concurrently
-                tasks = []
-                if shodan:
-                    shodan_task = asyncio.create_task(shodan.run())
-                    tasks.append(shodan_task)
-                if fofa:
-                    fofa_task = asyncio.create_task(fofa.run())
-                    tasks.append(fofa_task)
-                if zoomeye:
-                    zoomeye_task = asyncio.create_task(zoomeye.run())
-                    tasks.append(zoomeye_task)
-                hist_task = asyncio.create_task(historical.run())
-                tasks.append(hist_task)
+                async def run_named(name, source):
+                    return name, await source.run()
 
-                # Print interim summary while these run
-                self.console.print("    [dim]Interim summary (continuing long scans in background)...[/dim]")
-                self.console.print(f"    [dim]IPs discovered so far: {len(self.discovered_ips)}[/dim]")
-
-                # Collect results as tasks finish, ensure we don't skip any results
-                for finished in asyncio.as_completed(tasks):
+                tasks = [
+                    asyncio.create_task(run_named(name, source))
+                    for name, source in [
+                        ("shodan", shodan),
+                        ("fofa", fofa),
+                        ("zoomeye", zoomeye),
+                        ("historical", historical),
+                    ] if source is not None
+                ]
+                for completed in asyncio.as_completed(tasks):
                     try:
-                        res = await finished
-                    except Exception as e:
-                        self.console.print(f"    [dim yellow]A background module failed: {e}[/dim yellow]")
+                        name, payload = await completed
+                    except Exception as exc:
+                        self.console.print(f"[yellow][!] Intelligence module failed: {exc}[/yellow]")
                         continue
-
-                    # Identify which task finished
-                    if finished is shodan_task:
-                        shodan_results = res or {}
-                        for ip, meta in shodan_results.get("ips", {}).items():
-                            self._add_ip(ip, "Shodan", meta)
-                        self.console.print(f"    [dim]Shodan returned {len(shodan_results.get('ips', {}))} IPs[/dim]")
-                    elif finished is fofa_task:
-                        fofa_results = res or {}
-                        for ip, meta in fofa_results.get("ips", {}).items():
-                            self._add_ip(ip, "FOFA", meta)
-                        self.console.print(f"    [dim]FOFA returned {len(fofa_results.get('ips', {}))} IPs[/dim]")
-                    elif finished is zoomeye_task:
-                        zoomeye_results = res or {}
-                        for ip, meta in zoomeye_results.get("ips", {}).items():
-                            self._add_ip(ip, "ZoomEye", meta)
-                        self.console.print(f"    [dim]ZoomEye returned {len(zoomeye_results.get('ips', {}))} IPs[/dim]")
-                    elif finished is hist_task:
-                        hist_results = res or {}
-                        if isinstance(hist_results.get("ips"), dict):
-                            for ip, meta in hist_results.get("ips", {}).items():
-                                self._add_ip(ip, "Historical-DNS", meta)
-                        else:
-                            for ip in hist_results.get("ips", []):
-                                self._add_ip(ip, "Historical-DNS")
-                        self.console.print(f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]")
-
+                    payload = payload or {}
+                    if name == "historical":
+                        found = payload.get("ips", {})
+                        iterator = found.items() if isinstance(found, dict) else ((ip, {}) for ip in found)
+                        for ip, meta in iterator:
+                            self._add_ip(ip, "Historical-DNS", meta)
+                    else:
+                        for ip, meta in payload.get("ips", {}).items():
+                            self._add_ip(ip, {"shodan": "Shodan", "fofa": "FOFA", "zoomeye": "ZoomEye"}[name], meta)
             else:
                 # Blocking (original) behavior
                 if shodan:
@@ -283,7 +271,7 @@ class ReconEngine:
             self.console.print("[bold green][6/6][/bold green] Validating Origin IPs...")
             if not self.config.get("validate"):
                 self.console.print("    [dim]Validation skipped (--no-validate)[/dim]")
-                results["ips"] = {ip: {**meta, "confidence": 0, "validated": False}
+                results["ips"] = {ip: {**meta, "confidence": 0.0, "validated": False, "confirmed": False, "verification_status": "not_tested"}
                                   for ip, meta in self.discovered_ips.items()}
             else:
                 from core.validator import OriginValidator
@@ -293,6 +281,7 @@ class ReconEngine:
                     self.console,
                     session,
                     concurrency=self.config.get("validation_concurrency", 10),
+                    authorized_cidrs=self.config.get("authorized_cidrs", ()),
                 )
                 validated = await validator.validate_all(self.discovered_ips)
                 results["ips"] = validated
