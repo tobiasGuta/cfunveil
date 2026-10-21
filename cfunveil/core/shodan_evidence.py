@@ -75,6 +75,8 @@ def describe_shodan_match(result: Mapping, *, target: str, root_domain: str,
 
     port = result.get("port")
     port = port if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535 else None
+    ssl_data = result.get("ssl")
+    ssl_data = ssl_data if isinstance(ssl_data, Mapping) else {}
 
     return {
         "strategy": strategy,
@@ -86,4 +88,7 @@ def describe_shodan_match(result: Mapping, *, target: str, root_domain: str,
         "certificate_names": _certificate_names(result),
         "observed_at": timestamp,
         "port": port,
+        "product": result.get("product") if isinstance(result.get("product"), str) else None,
+        "version": result.get("version") if isinstance(result.get("version"), str) else None,
+        "jarm": ssl_data.get("jarm") if isinstance(ssl_data.get("jarm"), str) else None,
     }
