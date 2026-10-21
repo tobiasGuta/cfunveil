@@ -38,13 +38,14 @@ def _generate_html(results: dict, output_path: str, target: str):
             ip,
             f"{score * 100:.0f}/100",
             data.get("verification_status", "not_tested"),
+            data.get("evidence_status", "unclassified"),
             data.get("http_status", "—"),
             ", ".join(data.get("sources", [])),
         ]
         cells = "".join(f"<td>{_html(value)}</td>" for value in fields)
         details = "; ".join(str(x) for x in evidence + warnings) or "No verification evidence"
         rows.append(
-            f"<tr>{cells}</tr><tr class='details'><td colspan='5'>{_html(details)}</td></tr>"
+            f"<tr>{cells}</tr><tr class='details'><td colspan='6'>{_html(details)}</td></tr>"
         )
 
     def related_table(title, evidence):
@@ -100,7 +101,7 @@ th{color:#7dd3fc}.details{color:#b5c1cf;font-size:.86rem}.note{border-left:3px s
 application match does not by itself establish WAF bypass, impact, or permission to
 test the IP. Check the program's IP scope before performing any further testing.</p>
 <table>
-<thead><tr><th>IP address</th><th>Ranking score</th><th>Verification</th><th>HTTP</th><th>Discovery sources</th></tr></thead>
+<thead><tr><th>IP address</th><th>Ranking score</th><th>Verification</th><th>Discovery evidence</th><th>HTTP</th><th>Discovery sources</th></tr></thead>
 <tbody>__ROWS__</tbody>
 </table>
 __SECONDARY_SECTIONS__
