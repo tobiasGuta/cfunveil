@@ -176,3 +176,25 @@ async def test_allowlisted_baseline_taken_once(validator):
     validator.probe.baseline.assert_awaited_once_with("example.com")
     assert data["8.8.8.8"]["confirmed"] is True
     assert data["9.9.9.9"]["verification_status"] == "out_of_scope"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("baseline_override", [
+    {"tls_verified": False},
+    {"scheme": "http"},
+    {"scheme": None},
+])
+async def test_unverified_hostname_baseline_cannot_confirm_origin(
+    validator, baseline_override,
+):
+    baseline = response(ip=None)
+    baseline.update(baseline_override)
+    validator.baseline = baseline
+    # Even matching 400-byte responses and a verified direct candidate
+    # cannot authorize an application-match claim using a bad baseline.
+    result = await validator.validate_ip("8.8.8.8", {"sources": ["DNS"]})
+    assert result["confirmed"] is False
+    assert result["application_match"] is False
+    assert result["verification_status"] != "verified_direct_application"
+    assert any("baseline" in warning for warning in result["warnings"])
