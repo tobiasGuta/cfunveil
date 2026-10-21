@@ -29,7 +29,7 @@ class CertIntelligence:
         if not self.config.get('no_wildcards'):
             tasks.append(self._query_crtsh_alt())
 
-        if self.config.get("censys_id") and self.config.get("censys_secret"):
+        if self.config.get("censys_pat") or (self.config.get("censys_id") and self.config.get("censys_secret")):
             tasks.append(self._query_censys())
 
         await asyncio.gather(*tasks, return_exceptions=True)
