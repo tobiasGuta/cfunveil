@@ -9,7 +9,7 @@ CFUnveil gathers passive intelligence to identify possible origin IP addresses a
 CFUnveil now separates **exact-host origin leads**, **target-associated CDN edge addresses**,
 **related infrastructure**, **heuristic ranking**, and **verified direct-application matches**.
 
-On an exact subdomain scan, DNS collection is limited to that requested host
+Domain boundaries use an **offline bundled Public Suffix List**, including private tenant suffixes, so `api.example.co.uk` cannot silently become a `co.uk`-wide scan. Unrecognized suffixes fail closed rather than requesting unrelated domains.\n\nOn an exact subdomain scan, DNS collection is limited to that requested host
 and its direct DNS aliases. SPF email ranges, nameserver infrastructure and
 ASN-neighbor expansion do not create origin leads. Historical/CT evidence
 must retain a matching hostname, and third-party resources embedded in
@@ -20,7 +20,7 @@ authorization to test that service.
 Cloudflare IPs seen **only** with sibling-domain evidence remain related infrastructure,
 not CDN-edge evidence for the requested hostname.
 
-New scan checkpoints use a `_session_v4.json` suffix so old, overinclusive
+New scan checkpoints use a `_session_v5.json` suffix so old, overinclusive
 scan results cannot silently reappear after `--resume`.
 
 
@@ -80,7 +80,7 @@ Without such approval, run passive discovery instead:
 python cfunveil/main.py -t example.com --no-validate -o leads.json
 ```
 
-### Offline temporal discovery benchmark
+The SecurityTrails historical-A integration now queries the **exact requested hostname**, rather than substituting the root-domain apex.\n\n### Offline temporal discovery benchmark
 
 Run the second benchmark to check source attribution without querying live targets:
 
