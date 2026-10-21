@@ -34,7 +34,7 @@ console = Console()
 @click.option("--censys-org", envvar="CENSYS_API_ORG_ID", help="Censys Organization ID (optional)")
 @click.option("--threads", "-T", default=50, show_default=True, help="Concurrent async tasks")
 @click.option("--timeout", default=8, show_default=True, help="Request timeout in seconds")
-@click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for HTTP requests")
+@click.option("--insecure", is_flag=True, default=False, help="Disable SSL verification for passive-source requests only; requires --no-validate")
 @click.option("--cf-asns", default=None, help="Comma-separated list of Cloudflare ASNs to ignore (overrides built-in list)")
 @click.option("--validate-concurrency", default=10, show_default=True, help="Concurrent origin validation probes")
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging")
@@ -92,6 +92,13 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
 
 
 
+    if insecure and not no_validate:
+        raise click.BadParameter(
+            "--insecure requires --no-validate; a verified TLS baseline "
+            "is mandatory for active origin validation",
+            param_hint="--insecure",
+        )
+
     # Sanity-check numeric options
     if threads is None or int(threads) < 1:
         threads = 1
@@ -99,7 +106,7 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
         timeout = 8
 
 
-    session_file = f"cfunveil_{target.lower().rstrip('.').replace('.', '_')}_session_v5.json"
+    session_file = f"cfunveil_{target.lower().rstrip('.').replace('.', '_')}_session_v6.json"
     import os
     if not resume and os.path.exists(session_file):
         if click.confirm(f"[!] Found existing session file '{session_file}'. Do you want to resume?", default=True):
