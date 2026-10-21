@@ -21,7 +21,13 @@ Cloudflare IPs seen **only** with sibling-domain evidence remain related infrast
 not CDN-edge evidence for the requested hostname.
 
 New scan checkpoints use a `_session_v5.json` suffix so old, overinclusive
-scan results cannot silently reappear after `--resume`.
+scan results cannot silently reappear after `--resume`. When resuming a v5
+checkpoint, saved DNS and certificate-derived IP records are marked as
+`previous_dns_observed`, not `current_dns_observed`. The resolving modules
+re-run; only addresses actually observed again regain a current DNS status.
+Dated historical records are retained and reclassified using their recorded
+timestamps. The report preserves previous-run observations as unverified leads
+instead of pretending they were resolved during the new scan.
 
 
 ### Controlled origin-discovery benchmark
