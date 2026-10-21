@@ -36,14 +36,14 @@ class ReconEngine:
         self.cdn_edges: dict[str, dict] = {}
         # Version the checkpoint filename so earlier, overinclusive scan states
         # cannot silently reintroduce unrelated origin candidates.
-        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session_v4.json"
+        self.session_file = f"cfunveil_{self.target.replace('.', '_')}_session_v5.json"
         self.completed_modules: set[str] = set()
         self.subdomains: set[str] = set()
 
         if self.config.get("resume") and os.path.exists(self.session_file):
             with open(self.session_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            if state.get("target") != self.target or state.get("version") != 4:
+            if state.get("target") != self.target or state.get("version") != 5:
                 raise ValueError("Session target/version mismatch; start a new scan")
             self.discovered_ips = state.get("discovered_ips", {})
             self.related_ips = state.get("related_ips", {})
@@ -56,7 +56,7 @@ class ReconEngine:
         """Atomically checkpoint discoveries without ever clearing them."""
         import tempfile
         state = {
-            "version": 4,
+            "version": 5,
             "target": self.target,
             "discovered_ips": self.discovered_ips,
             "related_ips": self.related_ips,
