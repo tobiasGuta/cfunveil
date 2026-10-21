@@ -45,15 +45,21 @@ class HeadersProbe:
         try:
             async with self.session.get(url, **kwargs) as response:
                 raw_headers = {k.lower(): v for k, v in response.headers.items()}
+                # aiohttp may release response.connection before the body is read.
+                # Capture the transport peer first, using the response protocol when
+                # the high-level connection has already been returned to the pool.
+                connection = response.connection
+                transport = (
+                    connection.transport if connection is not None
+                    else getattr(getattr(response, "_protocol", None), "transport", None)
+                )
+                peer = transport.get_extra_info("peername") if transport else None
+                connected_ip = str(peer[0]) if peer else None
+
                 # A bounded read avoids unbounded response-body memory consumption.
                 body = await asyncio.wait_for(response.content.read(MAX_BODY + 1), timeout=3)
                 complete = len(body) <= MAX_BODY
                 body_hash = hashlib.sha256(body).hexdigest() if complete else None
-                try:
-                    peer = response.connection.transport.get_extra_info("peername")
-                    connected_ip = str(peer[0]) if peer else None
-                except (AttributeError, IndexError, TypeError):
-                    connected_ip = None
 
                 return {
                     "url": url,
