@@ -5,6 +5,7 @@ Runs all modules concurrently and aggregates results
 
 import json
 import os
+import re
 import asyncio
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -19,7 +20,9 @@ class ReconEngine:
     def __init__(self, config: dict, console: Console):
         self.config = config
         self.console = console
-        self.target = config["target"]
+        self.target = config["target"].rstrip(".").lower()
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9-]{2,63}", self.target):
+            raise ValueError("target must be a valid domain name, not a URL or path")
         parts = self.target.rstrip(".").lower().split(".")
         if len(parts) < 2 or not all(parts):
             raise ValueError("target must be a domain name")
