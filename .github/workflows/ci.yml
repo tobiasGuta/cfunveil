@@ -1,0 +1,26 @@
+name: CFUnveil checks
+
+on:
+  push:
+    branches: ['fix/**', 'main']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r cfunveil/requirements.txt pytest pytest-asyncio
+      - name: Python syntax
+        run: python -m compileall -q cfunveil tests
+      - name: Run regression tests
+        run: python -m pytest tests -q
