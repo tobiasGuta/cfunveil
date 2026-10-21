@@ -211,6 +211,7 @@ class ReconEngine:
             "ips": {},
             "related_infrastructure": {},
             "cdn_edges": {},
+            "shodan_query_metrics": [],
             "validated_origins": [],
             "asn_data": {},
             "summary": {}
@@ -353,6 +354,8 @@ class ReconEngine:
                         self.console.print(f"[yellow][!] Intelligence module failed: {exc}[/yellow]")
                         continue
                     payload = payload or {}
+                    if name == "shodan":
+                        results["shodan_query_metrics"] = payload.get("query_metrics", [])
                     if name == "historical":
                         found = payload.get("ips", {})
                         iterator = found.items() if isinstance(found, dict) else ((ip, {}) for ip in found)
@@ -365,6 +368,7 @@ class ReconEngine:
                 # Blocking (original) behavior
                 if shodan:
                     shodan_results = await shodan.run()
+                    results["shodan_query_metrics"] = shodan_results.get("query_metrics", [])
                     for ip, meta in shodan_results.get("ips", {}).items():
                         self._add_ip(ip, "Shodan", meta, category="related")
                     self.console.print(
