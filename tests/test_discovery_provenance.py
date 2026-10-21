@@ -128,6 +128,10 @@ async def test_scan_outputs_exclusive_origin_related_and_cdn_buckets(tmp_path, m
             "records": [{"domain": "nexus.dev.life360.com", "source": "urlscan"}],
             "sources": ["urlscan"]
         },
+        "172.64.150.73": {
+            "records": [{"domain": "datagrail.partner.dev.life360.com", "source": "urlscan"}],
+            "sources": ["urlscan"]
+        },
         "52.3.4.5": {
             "records": [{"domain": "api-cloudfront.life360.com", "source": "securitytrails"}],
             "sources": ["securitytrails"]
@@ -143,11 +147,11 @@ async def test_scan_outputs_exclusive_origin_related_and_cdn_buckets(tmp_path, m
     results = await engine.run()
     assert set(results["ips"]) == {"52.3.4.5"}
     assert set(results["cdn_edges"]) == {"104.18.37.240"}
-    assert set(results["related_infrastructure"]) == {"54.147.150.225"}
+    assert set(results["related_infrastructure"]) == {"54.147.150.225", "172.64.150.73"}
     assert "52.3.4.6" not in results["ips"]
     assert results["summary"]["total_ips_found"] == 1
     assert results["summary"]["cdn_edge_count"] == 1
-    assert results["summary"]["related_ip_count"] == 1
+    assert results["summary"]["related_ip_count"] == 2
 
 
 @pytest.mark.asyncio
