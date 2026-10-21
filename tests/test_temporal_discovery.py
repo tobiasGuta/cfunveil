@@ -82,3 +82,42 @@ async def test_offline_temporal_discovery_benchmark_acceptance():
     assert "54.20.40.11" in cases["moved_origin"]["candidate_states"]
     assert "54.20.40.11" not in cases["moved_origin"]["target_cdn_edges"]
     assert not cases["misleading_sibling_and_certificate"]["candidate_states"]
+
+
+@pytest.mark.asyncio
+async def test_securitytrails_history_is_requested_for_exact_hostname(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from core.historical import HistoricalSources
+
+    urls = []
+
+    class FakeResponse:
+        status = 200
+
+        async def json(self):
+            return {"records": [
+                {"first_seen": "2023-07-01", "last_seen": "2023-07-15",
+                 "values": [{"ip": "54.20.40.11"}]}
+            ]}
+
+    async def fake_get(session, url, **kwargs):
+        urls.append(url)
+        if "/dns/a" in url:
+            return FakeResponse()
+        return None
+
+    monkeypatch.setattr("core.utils.http_get_with_retry", fake_get)
+    source = HistoricalSources(
+        "fixture.example", {"st_key": "synthetic"}, Console(quiet=True),
+        MagicMock(), target="api.fixture.example",
+    )
+    await source._query_securitytrails()
+    assert urls[0] == (
+        "https://api.securitytrails.com/v1/history/"
+        "api.fixture.example/dns/a"
+    )
+    assert "54.20.40.11" in source.found_ips
+    record = source.found_ips["54.20.40.11"]["records"][0]
+    assert record["domain"] == "api.fixture.example"
+    assert record["last_seen"] == "2023-07-15"
+    assert record["relation"] == "exact_target"
