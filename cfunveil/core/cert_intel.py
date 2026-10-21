@@ -59,7 +59,7 @@ class CertIntelligence:
                     if self.config.get("no_wildcards") and entry.startswith("*."):
                         continue
                     entry = entry.lstrip("*.")
-                    if entry and self.root_domain in entry:
+                    if entry and (entry == self.root_domain or entry.endswith('.' + self.root_domain)):
                         self.found_subdomains.add(entry)
                     # Sometimes IPs appear directly in cert SANs
                     ips = IP_REGEX.findall(entry)
@@ -125,7 +125,7 @@ class CertIntelligence:
                             names = parsed.get("names", [])
                         names = names or hit.get("names") or []
                         for name in names:
-                            if self.root_domain in name:
+                            if name == self.root_domain or name.endswith('.' + self.root_domain):
                                 if self.config.get("no_wildcards") and name.startswith("*."):
                                     continue
                                 self.found_subdomains.add(name.lstrip("*."))
