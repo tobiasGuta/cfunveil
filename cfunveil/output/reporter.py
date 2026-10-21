@@ -47,6 +47,38 @@ def _generate_html(results: dict, output_path: str, target: str):
             f"<tr>{cells}</tr><tr class='details'><td colspan='5'>{_html(details)}</td></tr>"
         )
 
+    def related_table(title, evidence):
+        if not evidence:
+            return ""
+        entries = []
+        for ip, data in sorted(evidence.items()):
+            domain_names = sorted({
+                str(record.get("domain", ""))
+                for record in data.get("records", [])
+                if record.get("domain")
+            })
+            entries.append(
+                "<tr><td>" + _html(ip) + "</td><td>"
+                + _html(", ".join(domain_names) or "No specific hostname")
+                + "</td><td>"
+                + _html(", ".join(data.get("sources", [])))
+                + "</td></tr>"
+            )
+        return (
+            "<h2>" + _html(title) + " (" + str(len(evidence)) + ")</h2>"
+            "<table><thead><tr><th>IP address</th><th>Associated hostnames</th>"
+            "<th>Evidence sources</th></tr></thead><tbody>"
+            + "".join(entries) + "</tbody></table>"
+        )
+
+    secondary_sections = (
+        related_table("Observed CDN edge IPs, not origin leads", results.get("cdn_edges", {}))
+        + related_table(
+            "Related infrastructure, not origin leads",
+            results.get("related_infrastructure", {}),
+        )
+    )
+
     page = """<!doctype html>
 <html lang="en">
 <head>
@@ -71,6 +103,7 @@ test the IP. Check the program's IP scope before performing any further testing.
 <thead><tr><th>IP address</th><th>Ranking score</th><th>Verification</th><th>HTTP</th><th>Discovery sources</th></tr></thead>
 <tbody>__ROWS__</tbody>
 </table>
+__SECONDARY_SECTIONS__
 </body></html>"""
     page = (
         page.replace("__TARGET__", _html(target))
@@ -78,6 +111,7 @@ test the IP. Check the program's IP scope before performing any further testing.
         .replace("__TOTAL__", str(summary.get("total_ips_found", len(ips))))
         .replace("__VERIFIED__", str(verified))
         .replace("__ROWS__", "".join(rows))
+        .replace("__SECONDARY_SECTIONS__", secondary_sections)
     )
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(page)
