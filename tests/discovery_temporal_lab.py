@@ -87,9 +87,11 @@ async def _replay(*, current=(), scans=(), certificates=()):
         await cert._query_crtsh()
         await cert._resolve_subdomains()
 
-    engine = ReconEngine(
-        {"target": TARGET}, Console(quiet=True), evidence_as_of=AS_OF,
-    )
+    # Reserved .example domains exist only inside our offline fixtures.
+    with patch("core.scope.registrable_domain", return_value=ROOT):
+        engine = ReconEngine(
+            {"target": TARGET}, Console(quiet=True), evidence_as_of=AS_OF,
+        )
     # Match the orchestration engine's real ingestion and categorization.
     for ip in dns.get("ips", []):
         engine._add_ip(ip, "DNS", {"records": dns["records"].get(ip, [])})
