@@ -77,12 +77,18 @@ def test_shodan_accumulates_query_specific_observations_and_preserves_timestamps
         "ip_str": ip, "hostnames": ["MAIL.EXAMPLE.CO.UK."],
         "domains": ["example.co.uk"], "port": 443,
         "timestamp": "2026-10-14T12:00:00Z", "org": "Example Hosting",
-        "ssl": {"cert": {"subject": {"CN": "api.example.co.uk"}}},
+        "product": "Web service A", "version": "1.0",
+        "ssl": {
+            "cert": {"subject": {"CN": "api.example.co.uk"}},
+            "jarm": "first-jarm",
+        },
     }
     other = {
         "ip_str": ip, "hostnames": ["api.example.co.uk", "mail.example.co.uk"],
         "domains": ["example.co.uk"], "port": 80,
         "timestamp": "2026-10-19T08:00:00Z", "org": "Example Hosting",
+        "product": "Web service B", "version": "2.0",
+        "ssl": {"jarm": "second-jarm"},
     }
     pivot._add_result(first, strategy="ssl_certificate", query='ssl:"example.co.uk"')
     pivot._add_result(first, strategy="ssl_certificate", query='ssl:"example.co.uk"')
@@ -102,6 +108,11 @@ def test_shodan_accumulates_query_specific_observations_and_preserves_timestamps
     assert saved["shodan_evidence"][0]["observed_at"] == "2026-10-14T12:00:00Z"
     assert saved["shodan_evidence"][1]["observed_at"] == "2026-10-19T08:00:00Z"
     assert saved["shodan_evidence"][2]["observed_at"] is None
+    assert saved["shodan_evidence"][0]["product"] == "Web service A"
+    assert saved["shodan_evidence"][0]["jarm"] == "first-jarm"
+    assert saved["shodan_evidence"][1]["product"] == "Web service B"
+    assert saved["shodan_evidence"][1]["version"] == "2.0"
+    assert saved["shodan_evidence"][1]["jarm"] == "second-jarm"
     assert all("query" in record and "strategy" in record for record in saved["shodan_evidence"])
     assert "example.co.uk" in json.dumps(saved)
 
@@ -235,3 +246,37 @@ def test_html_shows_query_provenance_and_escapes_shodan_search_strings(tmp_path)
     assert "http_content" in html
     assert "&lt;script&gt;" in html
     assert "<script>evil()</script>" not in html
+
+
+
+def test_optional_deep_strategies_keep_query_provenance_without_network():
+    pivot = ShodanPivot(
+        "app.example.net", "example.net",
+        {"shodan_key": "offline-placeholder"}, Console(quiet=True),
+    )
+    pivot._add_result(
+        {
+            "ip_str": "8.8.8.8", "hostnames": ["portal.example.net"],
+            "asn": "AS64500", "ssl": {"jarm": "test-jarm"},
+        },
+        strategy="hostname", query='hostname:"portal.example.net"',
+    )
+    searches = []
+
+    class FakeAPI:
+        def search(self, query, limit=None):
+            searches.append(query)
+            return {"matches": [{"ip_str": "8.8.8.8", "hostnames": ["portal.example.net"]}]}
+
+    pivot.api = FakeAPI()
+    pivot._headers_search()
+    pivot._asn_search()
+    pivot._copyright_search("Example Corp")
+    pivot._jarm_search()
+    observations = pivot.found_ips["8.8.8.8"]["shodan_evidence"]
+    assert len(searches) == 5
+    assert {ob["strategy"] for ob in observations} == {
+        "hostname", "http_headers", "asn", "copyright", "jarm",
+    }
+    assert {ob["query"] for ob in observations if ob["strategy"] != "hostname"} == set(searches)
+    assert all(ob["relation"] == "related_hostname" for ob in observations)
