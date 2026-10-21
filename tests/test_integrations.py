@@ -160,3 +160,70 @@ def test_all_does_not_override_explicit_no_validate(monkeypatch):
     assert result.exit_code == 0, result.output
     assert captured["deep"] is True
     assert captured["validate"] is False
+
+
+
+def test_cli_refuses_insecure_active_validation_before_engine_is_created(monkeypatch):
+    called = []
+
+    class FailIfInvoked:
+        def __init__(self, *args, **kwargs):
+            called.append("engine")
+
+    monkeypatch.setattr("main.ReconEngine", FailIfInvoked)
+    result = CliRunner().invoke(main, [
+        "-t", "example.com", "--insecure",
+        "--authorized-cidr", "8.8.8.8/32", "--quiet",
+    ])
+    assert result.exit_code != 0
+    assert "--no-validate" in result.output
+    assert called == []
+
+
+def test_cli_permits_insecure_passive_discovery_with_explicit_no_validate(monkeypatch):
+    captured = {}
+
+    class FakeEngine:
+        def __init__(self, config, console):
+            captured.update(config)
+
+        async def run(self):
+            return {"ips": {}, "subdomains": [], "summary": {}}
+
+    monkeypatch.setattr("main.ReconEngine", FakeEngine)
+    monkeypatch.setattr("main.print_summary", lambda *args, **kwargs: None)
+    result = CliRunner().invoke(main, [
+        "-t", "example.com", "--insecure", "--no-validate", "--quiet",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["validate"] is False
+    assert captured["verify_ssl"] is False
+
+
+@pytest.mark.asyncio
+async def test_baseline_https_explicitly_overrides_insecure_session_ssl_policy():
+    class Response:
+        status = 200
+        headers = {"server": "nginx"}
+        content = MagicMock(read=AsyncMock(return_value=b"x" * 400))
+        connection = MagicMock(transport=MagicMock(
+            get_extra_info=lambda name: ("8.8.8.8", 443)
+        ))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    session = MagicMock()
+    session.get.return_value = Response()
+    probe = HeadersProbe("example.com", Console(), session)
+    baseline = await probe.baseline("example.com")
+    assert baseline["tls_verified"] is True
+    assert baseline["scheme"] == "https"
+    kwargs = session.get.call_args.kwargs
+    assert kwargs["allow_redirects"] is False
+    assert isinstance(kwargs["ssl"], ssl.SSLContext)
+    assert kwargs["ssl"].verify_mode == ssl.CERT_REQUIRED
+    assert kwargs["ssl"].check_hostname is True
