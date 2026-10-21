@@ -202,3 +202,36 @@ async def test_engine_keeps_shodan_exact_hostname_in_related_bucket_and_json(
     generate_report(report, str(tmp_path / "report.json"), "api.example.org")
     serialized = json.loads((tmp_path / "report.json").read_text())
     assert serialized["related_infrastructure"]["8.8.8.8"]["details"]["shodan_evidence"][0]["query"] == 'hostname:"api.example.org"'
+
+
+
+def test_html_shows_query_provenance_and_escapes_shodan_search_strings(tmp_path):
+    from output.reporter import generate_report
+
+    payload = {
+        "target": "api.example.org",
+        "ips": {},
+        "summary": {"total_ips_found": 0},
+        "related_infrastructure": {
+            "8.8.8.8": {
+                "sources": ["Shodan"], "records": [],
+                "details": {
+                    "hostnames": ["portal.example.org"],
+                    "shodan_evidence": [{
+                        "strategy": "http_content", "relation": "related_hostname",
+                        "query": 'http.html:"<script>evil()</script>"',
+                        "observed_at": None,
+                    }],
+                },
+            },
+        },
+    }
+    path = tmp_path / "evidence.html"
+    generate_report(payload, str(path), "api.example.org")
+    html = path.read_text()
+    assert "portal.example.org" in html
+    assert "Shodan query provenance (not origin proof)" in html
+    assert "related_hostname" in html
+    assert "http_content" in html
+    assert "&lt;script&gt;" in html
+    assert "<script>evil()</script>" not in html
