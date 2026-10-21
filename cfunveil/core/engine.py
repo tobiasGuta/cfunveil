@@ -160,6 +160,33 @@ class ReconEngine:
             category = "candidate" if exact_target else "related"
         self._add_ip(ip, "Historical-DNS", meta, category=category)
 
+    def _attach_related_shodan_context(self):
+        """Expose same-IP Shodan evidence without promoting its provenance.
+
+        Related discovery may overlap a separately verified exact-host DNS/
+        historical IP or a target CDN edge. Keep that context available in the
+        surviving bucket while leaving the candidate's source list and
+        verification score grounded only in its independent origin evidence.
+        """
+        for registry in (self.discovered_ips, self.cdn_edges):
+            for ip, candidate in registry.items():
+                related = self.related_ips.get(ip)
+                if not isinstance(related, dict):
+                    continue
+                details = related.get("details", {})
+                if not isinstance(details, dict) or "shodan_evidence" not in details:
+                    continue
+                target_details = candidate.setdefault("details", {})
+                for key in (
+                    "shodan_evidence", "shodan_relations",
+                    "shodan_observations_truncated",
+                ):
+                    if key in details:
+                        target_details[key] = details[key]
+                candidate["context_sources"] = sorted(set(
+                    candidate.get("context_sources", ())
+                ) | set(related.get("sources", ())))
+
     def _is_valid_ip(self, ip: str) -> bool:
         # Accept both IPv4 and IPv6 using the stdlib `ipaddress` module
         try:
@@ -369,8 +396,9 @@ class ReconEngine:
                     f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
                 )
 
-            # Historical-source evidence must survive interruption or
-            # resume too; the earlier checkpoints covered only DNS and certs.
+            # Historical and Shodan evidence survive even if it refers to
+            # the same IP as independently attributed target evidence.
+            self._attach_related_shodan_context()
             self._save_session()
 
             # ── Module 5: ASN Intelligence ──────────────────────────

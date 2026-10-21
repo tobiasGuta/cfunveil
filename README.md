@@ -9,7 +9,9 @@ CFUnveil gathers passive intelligence to identify possible origin IP addresses a
 CFUnveil now separates **exact-host origin leads**, **target-associated CDN edge addresses**,
 **related infrastructure**, **heuristic ranking**, and **verified direct-application matches**.
 
-Domain boundaries use an **offline bundled Public Suffix List**, including private tenant suffixes, so `api.example.co.uk` cannot silently become a `co.uk`-wide scan. Unrecognized suffixes fail closed rather than requesting unrelated domains.\n\nOn registrable-domain apex scans, common sibling hostnames can still be
+Domain boundaries use an **offline bundled Public Suffix List**, including private tenant suffixes, so `api.example.co.uk` cannot silently become a `co.uk`-wide scan. Unrecognized suffixes fail closed rather than requesting unrelated domains.
+
+On registrable-domain apex scans, common sibling hostnames can still be
 enumerated, but only IPs with exact-apex DNS attribution become origin
 leads or target-associated CDN edges. Sibling-only and unattributed IPs stay
 in the related-infrastructure evidence section.
@@ -26,7 +28,7 @@ Cloudflare IPs seen **only** with sibling-domain evidence remain related infrast
 not CDN-edge evidence for the requested hostname.
 
 New scan checkpoints use a `_session_v6.json` suffix so old, overinclusive
-scan results cannot silently reappear after `--resume`. When resuming a v5
+scan results cannot silently reappear after `--resume`. When resuming a v6
 checkpoint, saved DNS and certificate-derived IP records are marked as
 `previous_dns_observed`, not `current_dns_observed`. The resolving modules
 re-run; only addresses actually observed again regain a current DNS status.
@@ -305,6 +307,38 @@ python cfunveil/main.py -t example.com --shodan-key KEY --output results.json
 # HTML report (visual, shareable for bug bounty reports)
 python cfunveil/main.py -t example.com --shodan-key KEY --output report.html
 ```
+
+## Shodan match provenance (all targets)
+
+Every Shodan match now carries **per-observation, target-relative evidence**
+in the JSON report at
+`related_infrastructure[IP].details.shodan_evidence`. If the same IP also has
+independent exact-host DNS/historical evidence or is a target CDN edge, the
+Shodan observations appear in that surviving bucket's `details.shodan_evidence`
+with `context_sources: ["Shodan"]`, **without adding Shodan to its
+verification-scoring sources**.
+Each observation retains its search `strategy`, exact `query`, any Shodan
+`timestamp`/`last_update` as `observed_at` (or `null`), the banner `port`,
+its observed `hostnames`, individually preserved product/version/JARM details,
+and separately recorded certificate names.
+Repeated results for one IP are deduplicated without overwriting evidence from
+different queries or timestamps. A maximum of 128 distinct observations is
+stored per IP; additional observations are counted in
+`shodan_observations_truncated`. The HTML report displays escaped
+strategy, relation and query information for each related IP.
+
+Hostname relations are calculated from the **requested hostname** and its
+public-suffix-aware scope, never from a hardcoded customer/domain:
+- `exact_target_hostname` — Shodan explicitly lists the exact requested hostname
+- `related_hostname` — Shodan lists another hostname within the same scoped domain
+- `fingerprint_only` — a favicon/JARM/header-fingerprint search match without a matching hostname
+- `query_only` — search match without independently reported in-scope hostname evidence
+
+Shodan-only results, matching certificate names, shared fingerprints and multiple
+queries **remain related infrastructure**. They do not create an origin lead,
+prove current DNS ownership, bypass Cloudflare, or grant authorization to probe
+a candidate IP. Missing Shodan timestamps remain unknown. No new provider
+queries, API-key requirements, or live IP probes are introduced by this feature.
 
 ## Shodan Strategies Used
 

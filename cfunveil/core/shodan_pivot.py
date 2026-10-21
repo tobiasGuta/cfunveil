@@ -1,12 +1,12 @@
 """
 core/shodan_pivot.py - Shodan Intelligence Pivot
-Full Shodan API integration with premium student key support
-Multiple search strategies to find origin IPs
+Shodan intelligence search with per-match provenance and safe source attribution
 """
 
 import asyncio
 import shodan
 from rich.console import Console
+from core.shodan_evidence import describe_shodan_match
 
 
 # CloudFlare's ASN to exclude from results
@@ -34,7 +34,7 @@ class ShodanPivot:
             self.cf_asns = CF_ASNS
 
     async def run(self) -> dict:
-        """Run all Shodan search strategies concurrently"""
+        """Run Shodan strategies sequentially, retaining each query's evidence"""
         loop = asyncio.get_event_loop()
 
         # strategies: list of (name, func, args_tuple)
@@ -74,43 +74,93 @@ class ShodanPivot:
 
         return {"ips": self.found_ips}
 
-    def _add_result(self, result: dict):
-        """Parse a Shodan result and add to found IPs if not CF"""
-        ip = result.get("ip_str", "")
-        if not ip:
+    def _add_result(self, result: dict, *, strategy: str, query: str):
+        """Accumulate compact banner evidence without promoting an origin lead.
+
+        Different queries and timestamps may find the same IP. Keep both; a
+        duplicate of the same observation is collapsed. Shodan's broad search
+        hits are always *related*, never proof of an exact-target origin.
+        """
+        if not isinstance(result, dict):
+            return
+        ip = result.get("ip_str")
+        if not isinstance(ip, str) or not ip:
             return
 
-        # Filter CloudFlare IPs by ASN
-        asn = result.get("asn", "")
-        if asn in self.cf_asns:
-            return
-        org = result.get("org", "")
-        if "cloudflare" in org.lower():
+        asn = result.get("asn") or ""
+        org = result.get("org") or ""
+        if asn in self.cf_asns or (
+            isinstance(org, str) and "cloudflare" in org.lower()
+        ):
             return
 
-        self.found_ips[ip] = {
-            "org": org,
-            "asn": asn,
-            "country": result.get("location", {}).get("country_name", ""),
-            "ports": result.get("ports", []),
-            "hostnames": result.get("hostnames", []),
+        observation = describe_shodan_match(
+            result, target=self.target, root_domain=self.root_domain,
+            strategy=strategy, query=query,
+        )
+        entry = self.found_ips.setdefault(ip, {
+            "org": "", "asn": "", "country": "", "ports": [],
+            "hostnames": [], "os": None, "isp": "", "domains": [],
+            "tags": [], "shodan_data": {
+                "last_update": None, "product": None, "version": None, "jarm": None,
+            },
+            "shodan_evidence": [], "shodan_relations": [],
+            "shodan_observations_truncated": 0,
+        })
+
+        location = result.get("location")
+        location = location if isinstance(location, dict) else {}
+        ssl_data = result.get("ssl")
+        ssl_data = ssl_data if isinstance(ssl_data, dict) else {}
+
+        # Retain first nonempty summary values for old report consumers.
+        values = {
+            "org": org, "asn": asn,
+            "country": location.get("country_name"),
             "os": result.get("os"),
-            "isp": result.get("isp", ""),
-            "domains": result.get("domains", []),
-            "tags": result.get("tags", []),
-            "shodan_data": {
-                "last_update": result.get("last_update"),
-                "product": result.get("product"),
-                "version": result.get("version"),
-                "jarm": result.get("ssl", {}).get("jarm") if isinstance(result.get("ssl"), dict) else None
-            }
+            "isp": result.get("isp"),
         }
+        for key, value in values.items():
+            if value and not entry.get(key):
+                entry[key] = value
+
+        for key in ("hostnames", "domains", "tags", "ports"):
+            raw = result.get(key)
+            items = raw if isinstance(raw, (list, tuple)) else []
+            if key == "ports" and observation["port"] is not None:
+                items = [*items, observation["port"]]
+            if key == "hostnames":
+                items = observation["hostnames"]
+            for item in items:
+                if isinstance(item, (str, int)) and item not in entry[key]:
+                    entry[key].append(item)
+
+        summary = {
+            "last_update": result.get("last_update"),
+            "product": result.get("product"),
+            "version": result.get("version"),
+            "jarm": ssl_data.get("jarm"),
+        }
+        for key, value in summary.items():
+            if value is not None and entry["shodan_data"].get(key) is None:
+                entry["shodan_data"][key] = value
+
+        if observation["relation"] not in entry["shodan_relations"]:
+            entry["shodan_relations"].append(observation["relation"])
+
+        # Prevent unbounded reports when searches repeatedly return one IP.
+        observations = entry["shodan_evidence"]
+        if observation not in observations:
+            if len(observations) < 128:
+                observations.append(observation)
+            else:
+                entry["shodan_observations_truncated"] += 1
 
     # ── Search Strategy 1: SSL Cert Pivot (Most Reliable) ────────────
     def _ssl_cert_pivot(self):
         """
         Search for IPs with SSL certs matching domain, EXCLUDING CloudFlare.
-        This is the single most effective Shodan technique for CF bypass.
+        A matching certificate is only related intelligence, not bypass proof.
         """
         queries = [
             f'ssl:"{self.root_domain}" -org:"Cloudflare"',
@@ -123,7 +173,7 @@ class ShodanPivot:
                 from core.utils import sync_retry
                 results = sync_retry(self.api.search, query, limit=100, attempts=3, exceptions=(shodan.APIError,))
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="ssl_certificate", query=query)
             except shodan.APIError as e:
                 self.logger.debug("SSL cert pivot query failed: %s", e)
             except Exception as e:
@@ -142,7 +192,7 @@ class ShodanPivot:
                 from core.utils import sync_retry
                 results = sync_retry(self.api.search, query, limit=100, attempts=3, exceptions=(shodan.APIError,))
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="hostname", query=query)
             except shodan.APIError as e:
                 self.logger.debug("Hostname search failed: %s", e)
             except Exception as e:
@@ -160,7 +210,7 @@ class ShodanPivot:
             try:
                 results = self.api.search(query, limit=50)
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="http_content", query=query)
             except shodan.APIError as e:
                 self.logger.debug("HTTP content search failed: %s", e)
             except Exception as e:
@@ -174,7 +224,7 @@ class ShodanPivot:
         try:
             results = self.api.search(query, limit=100)
             for match in results.get("matches", []):
-                self._add_result(match)
+                self._add_result(match, strategy="copyright", query=query)
         except shodan.APIError as e:
             self.logger.debug("Copyright search failed: %s", e)
         except Exception as e:
@@ -184,7 +234,7 @@ class ShodanPivot:
     def _favicon_search(self):
         """
         Fetch target favicon, compute Shodan hash, find same favicon on other IPs.
-        Origin servers often have the same favicon as the CF-fronted site.
+        Favicon reuse is only a weak fingerprint; it cannot establish ownership.
         """
         import base64
         import urllib.request
@@ -227,7 +277,7 @@ class ShodanPivot:
             try:
                 results = self.api.search(query, limit=50)
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="favicon_hash", query=query)
             except shodan.APIError as e:
                 self.logger.debug("Favicon search failed: %s", e)
             except Exception as e:
@@ -250,7 +300,7 @@ class ShodanPivot:
             try:
                 results = self.api.search(query, limit=50)
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="http_headers", query=query)
             except Exception:
                 pass
 
@@ -274,14 +324,14 @@ class ShodanPivot:
                 query = f'asn:{asn} hostname:"{self.root_domain}"'
                 results = self.api.search(query, limit=50)
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="asn", query=query)
             except Exception:
                 pass
 
     # ── Search Strategy 7: JARM Fingerprinting ───────────────────────
     def _jarm_search(self):
         """
-        Deep: Extract JARM hashes from already discovered origin IPs,
+        Deep: Extract JARM hashes from related discovered IPs,
         and find other non-CDN servers sharing the same TLS fingerprint.
         """
         jarm_hashes = set()
@@ -296,7 +346,7 @@ class ShodanPivot:
                 query = f'ssl.jarm:{j_hash} hostname:"{self.root_domain}" -org:"Cloudflare"'
                 results = self.api.search(query, limit=50)
                 for match in results.get("matches", []):
-                    self._add_result(match)
+                    self._add_result(match, strategy="jarm", query=query)
             except Exception as e:
                 self.logger.debug("JARM search failed for hash %s: %s", j_hash, e)
 

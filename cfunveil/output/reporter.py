@@ -53,22 +53,53 @@ def _generate_html(results: dict, output_path: str, target: str):
             return ""
         entries = []
         for ip, data in sorted(evidence.items()):
+            details = data.get("details", {})
+            details = details if isinstance(details, dict) else {}
+            shodan_hosts = details.get("hostnames", [])
+            shodan_hosts = shodan_hosts if isinstance(shodan_hosts, list) else []
             domain_names = sorted({
-                str(record.get("domain", ""))
-                for record in data.get("records", [])
-                if record.get("domain")
+                *(
+                    str(record.get("domain", ""))
+                    for record in data.get("records", [])
+                    if isinstance(record, dict) and record.get("domain")
+                ),
+                *(str(host) for host in shodan_hosts),
             })
+            shodan_matches = details.get("shodan_evidence", [])
+            evidence_lines = []
+            for match in shodan_matches if isinstance(shodan_matches, list) else []:
+                if not isinstance(match, dict):
+                    continue
+                label = (
+                    str(match.get("strategy", "unknown")) + " · "
+                    + str(match.get("relation", "unattributed"))
+                    + " · " + str(match.get("query", ""))
+                )
+                if match.get("observed_at"):
+                    label += " · observed " + str(match["observed_at"])
+                evidence_lines.append("<li>" + _html(label) + "</li>")
+            if evidence_lines:
+                trunc = int(details.get("shodan_observations_truncated") or 0)
+                trunc_label = f" (+{trunc} omitted)" if trunc else ""
+                shodan_html = (
+                    "<details><summary>Shodan observations: "
+                    + str(len(evidence_lines)) + _html(trunc_label)
+                    + "</summary><ul>" + "".join(evidence_lines) + "</ul></details>"
+                )
+            else:
+                shodan_html = "—"
             entries.append(
                 "<tr><td>" + _html(ip) + "</td><td>"
                 + _html(", ".join(domain_names) or "No specific hostname")
                 + "</td><td>"
                 + _html(", ".join(data.get("sources", [])))
-                + "</td></tr>"
+                + "</td><td>" + shodan_html + "</td></tr>"
             )
         return (
             "<h2>" + _html(title) + " (" + str(len(evidence)) + ")</h2>"
             "<table><thead><tr><th>IP address</th><th>Associated hostnames</th>"
-            "<th>Evidence sources</th></tr></thead><tbody>"
+            "<th>Evidence sources</th><th>Shodan query provenance (not origin proof)</th>"
+            "</tr></thead><tbody>"
             + "".join(entries) + "</tbody></table>"
         )
 
