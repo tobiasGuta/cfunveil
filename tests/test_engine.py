@@ -41,8 +41,10 @@ def test_resume_preserves_prior_evidence(tmp_path, monkeypatch):
     engine._save_session()
 
     resumed = ReconEngine({"target": "example.com", "resume": True}, Console())
-    assert resumed.discovered_ips["8.8.8.8"]["sources"] == ["DNS"]
-    assert "dns" in resumed.completed_modules
+    assert resumed.discovered_ips["8.8.8.8"]["sources"] == []
+    assert "dns" not in resumed.completed_modules
+    assert "ssl" not in resumed.completed_modules
+    assert resumed.discovered_ips["8.8.8.8"]["evidence_status"] == "no_exact_target_evidence"
 
 
 def test_resume_rejects_mismatched_target(tmp_path, monkeypatch):
@@ -162,3 +164,126 @@ def test_scope_helper_never_uses_remote_psl():
     from core.scope import _EXTRACT
     assert _EXTRACT.suffix_list_urls == ()
     assert _EXTRACT.include_psl_private_domains is True
+
+
+
+@pytest.mark.asyncio
+async def test_resume_refreshes_dns_and_certificate_ip_associations(tmp_path, monkeypatch):
+    """No cached IP can retain a current observation without a fresh query."""
+    from unittest.mock import AsyncMock
+    from datetime import datetime, timezone
+
+    from core.dns_enum import DNSEnumerator
+    from core.cert_intel import CertIntelligence
+    from core.historical import HistoricalSources
+    from core.asn_intel import ASNIntelligence
+
+    monkeypatch.chdir(tmp_path)
+    target = "api.example.com"
+    first_ip, second_ip, cert_ip = "8.8.8.8", "9.9.9.9", "8.8.4.4"
+    old_historical_ip = "1.1.1.1"
+
+    def dns_payload(ip):
+        return {
+            "ips": [ip], "cloudflare_ips": [], "subdomains": [target],
+            "records": {ip: [{"domain": target, "record_type": "A"}]},
+        }
+
+    def cert_payload(ip=None):
+        if ip is None:
+            return {"ips": [], "subdomains": [], "records": {}}
+        return {
+            "ips": [ip], "subdomains": [target],
+            "records": {ip: [
+                {"domain": target, "record_type": "cert-hostname-DNS-A"}
+            ]},
+        }
+
+    dns = AsyncMock(side_effect=[dns_payload(first_ip), dns_payload(second_ip)])
+    cert = AsyncMock(side_effect=[cert_payload(cert_ip), cert_payload()])
+    history = AsyncMock(side_effect=[
+        {"ips": {
+            old_historical_ip: {
+                "records": [{
+                    "domain": target, "source": "urlscan",
+                    "last_seen": "2020-01-01",
+                }],
+                "sources": ["urlscan"],
+            },
+        }},
+        {"ips": {}},
+    ])
+    monkeypatch.setattr(DNSEnumerator, "run", dns)
+    monkeypatch.setattr(CertIntelligence, "run", cert)
+    monkeypatch.setattr(HistoricalSources, "run", history)
+    monkeypatch.setattr(ASNIntelligence, "run", AsyncMock(
+        return_value={"resolved": {}, "sibling_ips": []},
+    ))
+
+    config = {
+        "target": target, "threads": 5, "timeout": 3, "validate": False,
+    }
+    as_of = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    first = ReconEngine(config, Console(quiet=True), evidence_as_of=as_of)
+    result1 = await first.run()
+    assert result1["ips"][first_ip]["evidence_status"] == "current_dns_observed"
+    assert result1["ips"][cert_ip]["evidence_status"] == "current_dns_observed"
+    assert result1["ips"][old_historical_ip]["evidence_status"] == "historical_stale"
+
+    resumed = ReconEngine(
+        {**config, "resume": True}, Console(quiet=True), evidence_as_of=as_of,
+    )
+    # Assert BEFORE fetching fresh data: a checkpoint is never "current".
+    assert resumed.discovered_ips[first_ip]["evidence_status"] == "previous_dns_observed"
+    assert resumed.discovered_ips[cert_ip]["evidence_status"] == "previous_dns_observed"
+    assert resumed.discovered_ips[old_historical_ip]["evidence_status"] == "historical_stale"
+    assert resumed.discovered_ips[first_ip]["sources"] == []
+    assert resumed.discovered_ips[cert_ip]["sources"] == []
+    assert "dns" not in resumed.completed_modules
+    assert "ssl" not in resumed.completed_modules
+    assert resumed.subdomains == set()
+
+    result2 = await resumed.run()
+    assert dns.await_count == 2
+    assert cert.await_count == 2
+    assert result2["ips"][first_ip]["evidence_status"] == "previous_dns_observed"
+    assert result2["ips"][cert_ip]["evidence_status"] == "previous_dns_observed"
+    assert result2["ips"][second_ip]["evidence_status"] == "current_dns_observed"
+    assert result2["ips"][second_ip]["sources"] == ["DNS"]
+    assert result2["ips"][old_historical_ip]["evidence_status"] == "historical_stale"
+    assert result2["ips"][old_historical_ip]["records"][0]["last_seen"] == "2020-01-01"
+
+
+@pytest.mark.asyncio
+async def test_resume_reobservation_does_not_accumulate_duplicate_dns_records(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from core.dns_enum import DNSEnumerator
+    from core.cert_intel import CertIntelligence
+    from core.historical import HistoricalSources
+    from core.asn_intel import ASNIntelligence
+
+    monkeypatch.chdir(tmp_path)
+    ip, target = "9.9.9.9", "api.example.com"
+    payload = {
+        "ips": [ip], "cloudflare_ips": [], "subdomains": [target],
+        "records": {ip: [{"domain": target, "record_type": "A"}]},
+    }
+    monkeypatch.setattr(DNSEnumerator, "run", AsyncMock(return_value=payload))
+    monkeypatch.setattr(CertIntelligence, "run", AsyncMock(
+        return_value={"ips": [], "subdomains": [], "records": {}},
+    ))
+    monkeypatch.setattr(HistoricalSources, "run", AsyncMock(return_value={"ips": {}}))
+    monkeypatch.setattr(ASNIntelligence, "run", AsyncMock(
+        return_value={"resolved": {}, "sibling_ips": []},
+    ))
+    config = {"target": target, "threads": 5, "timeout": 3, "validate": False}
+    engine = ReconEngine(config, Console(quiet=True))
+    await engine.run()
+    for _ in range(3):
+        engine = ReconEngine({**config, "resume": True}, Console(quiet=True))
+        report = await engine.run()
+        assert report["ips"][ip]["evidence_status"] == "current_dns_observed"
+        assert report["ips"][ip]["sources"] == ["DNS"]
+        assert report["ips"][ip]["records"] == [
+            {"domain": target, "record_type": "A"},
+        ]
