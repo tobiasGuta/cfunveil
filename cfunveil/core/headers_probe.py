@@ -36,11 +36,14 @@ class HeadersProbe:
             "allow_redirects": False,
             "timeout": aiohttp.ClientTimeout(total=8),
         }
-        # server_hostname controls SNI AND certificate name checking for aiohttp
-        # connections to an IP literal. Do not disable TLS verification.
+        # Override connector-level insecure settings for BOTH the hostname
+        # HTTPS baseline and direct-IP probes. TLS verification is mandatory
+        # for verification evidence, regardless of the shared API connector.
+        if url.startswith("https://"):
+            kwargs["ssl"] = ssl.create_default_context()
+        # server_hostname controls SNI AND hostname checking on IP literals.
         if sni is not None:
             kwargs["server_hostname"] = sni
-            kwargs["ssl"] = ssl.create_default_context()
 
         try:
             async with self.session.get(url, **kwargs) as response:
