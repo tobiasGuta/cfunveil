@@ -264,7 +264,7 @@ class ReconEngine:
                     records = cert_results.get("records", {}).get(ip, [])
                     exact = any(r.get("domain") == self.target for r in records)
                     category = (
-                        "cdn" if is_cloudflare_ip(ip)
+                        "cdn" if exact and is_cloudflare_ip(ip)
                         else "candidate" if exact else "related"
                     )
                     self._add_ip(ip, "SSL-Cert", {"records": records}, category=category)
