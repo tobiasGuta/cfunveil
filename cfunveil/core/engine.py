@@ -369,6 +369,7 @@ class ReconEngine:
 
     def _get_sources_used(self) -> list[str]:
         sources = set()
-        for ip_data in self.discovered_ips.values():
-            sources.update(ip_data.get("sources", []))
+        for registry in (self.discovered_ips, self.related_ips, self.cdn_edges):
+            for ip_data in registry.values():
+                sources.update(ip_data.get("sources", []))
         return list(sources)
