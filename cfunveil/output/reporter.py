@@ -103,7 +103,7 @@ def _generate_html(results: dict, output_path: str, target: str):
             + "".join(entries) + "</tbody></table>"
         )
 
-    def shodan_query_table(metrics):
+    def shodan_query_table(metrics, budget):
         if not metrics:
             return ""
         entries = []
@@ -113,6 +113,7 @@ def _generate_html(results: dict, output_path: str, target: str):
             columns = (
                 metric.get("strategy", "—"),
                 metric.get("query") or "—",
+                metric.get("page"),
                 metric.get("status", "—"),
                 metric.get("returned_matches"),
                 metric.get("unique_ips"),
@@ -139,18 +140,29 @@ def _generate_html(results: dict, output_path: str, target: str):
                 detail += " · error: " + str(metric["error_type"])
             if metric.get("skip_reason"):
                 detail += " · skipped: " + str(metric["skip_reason"])
+            if metric.get("pagination_stop_reason"):
+                detail += " · pagination stopped: " + str(metric["pagination_stop_reason"])
             entries.append(
                 "<tr>" + cells + "</tr>"
-                "<tr class='details'><td colspan='11'>" + _html(detail)
+                "<tr class='details'><td colspan='12'>" + _html(detail)
                 + "</td></tr>"
+            )
+        budget_description = ""
+        if isinstance(budget, dict):
+            budget_description = (
+                "<p>Max pages/query: " + _html(budget.get("max_pages_per_query", "—"))
+                + " · extra-page request budget: " + _html(budget.get("extra_page_request_budget", "—"))
+                + " · extra-page attempts: " + _html(budget.get("extra_page_requests_attempted", "—"))
+                + " · actual credits used: unknown</p>"
             )
         return (
             "<h2>Shodan query effectiveness (bounded observations)</h2>"
+            + budget_description
             "<p>New IPs and evidence depend on query order; exclusive counts "
             "do not. Reaching a result limit suggests possible truncation. "
             "Per-query credit costs are not available from this source.</p>"
             "<table><thead><tr>"
-            "<th>Strategy</th><th>Query</th><th>Status</th>"
+            "<th>Strategy</th><th>Query</th><th>Page</th><th>Status</th>"
             "<th>Returned</th><th>IPs</th><th>New IPs</th>"
             "<th>Exclusive IPs</th><th>Banner evidence</th>"
             "<th>New evidence</th><th>Exclusive evidence</th>"
@@ -159,7 +171,10 @@ def _generate_html(results: dict, output_path: str, target: str):
         )
 
     secondary_sections = (
-        shodan_query_table(results.get("shodan_query_metrics", []))
+        shodan_query_table(
+            results.get("shodan_query_metrics", []),
+            results.get("shodan_pagination_budget"),
+        )
         + related_table("Observed CDN edge IPs, not origin leads", results.get("cdn_edges", {}))
         + related_table(
             "Related infrastructure, not origin leads",
