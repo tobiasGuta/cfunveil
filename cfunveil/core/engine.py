@@ -352,6 +352,10 @@ class ReconEngine:
                     f"    [dim]Historical sources found {len(hist_results.get('ips', []))} IPs[/dim]"
                 )
 
+            # Historical-source evidence must survive interruption or
+            # resume too; the earlier checkpoints covered only DNS and certs.
+            self._save_session()
+
             # ── Module 5: ASN Intelligence ──────────────────────────
             self.console.print("[bold green][5/6][/bold green] ASN & BGP Intelligence...")
             all_ips = list(self.discovered_ips.keys())
