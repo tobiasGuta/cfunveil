@@ -103,8 +103,64 @@ def _generate_html(results: dict, output_path: str, target: str):
             + "".join(entries) + "</tbody></table>"
         )
 
+    def shodan_query_table(metrics):
+        if not metrics:
+            return ""
+        entries = []
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            columns = (
+                metric.get("strategy", "—"),
+                metric.get("query") or "—",
+                metric.get("status", "—"),
+                metric.get("returned_matches"),
+                metric.get("unique_ips"),
+                metric.get("incremental_new_ips"),
+                metric.get("exclusive_ips"),
+                metric.get("unique_banner_evidence"),
+                metric.get("incremental_new_banner_evidence"),
+                metric.get("exclusive_banner_evidence"),
+                metric.get("provider_total"),
+            )
+            values = ("—" if x is None else x for x in columns)
+            cells = "".join("<td>" + _html(v) + "</td>" for v in values)
+            limit = metric.get("result_limit")
+            cap = (
+                "Not known" if metric.get("limit_reached") is None else
+                "Yes" if metric["limit_reached"] else "No"
+            )
+            detail = (
+                "Result cap hit: " + cap
+                + " · requested limit: " + str(limit if limit is not None else "—")
+                + " · provider credits used: not available"
+            )
+            if metric.get("error_type"):
+                detail += " · error: " + str(metric["error_type"])
+            if metric.get("skip_reason"):
+                detail += " · skipped: " + str(metric["skip_reason"])
+            entries.append(
+                "<tr>" + cells + "</tr>"
+                "<tr class='details'><td colspan='11'>" + _html(detail)
+                + "</td></tr>"
+            )
+        return (
+            "<h2>Shodan query effectiveness (bounded observations)</h2>"
+            "<p>New IPs and evidence depend on query order; exclusive counts "
+            "do not. Reaching a result limit suggests possible truncation. "
+            "Per-query credit costs are not available from this source.</p>"
+            "<table><thead><tr>"
+            "<th>Strategy</th><th>Query</th><th>Status</th>"
+            "<th>Returned</th><th>IPs</th><th>New IPs</th>"
+            "<th>Exclusive IPs</th><th>Banner evidence</th>"
+            "<th>New evidence</th><th>Exclusive evidence</th>"
+            "<th>Provider total</th></tr></thead><tbody>"
+            + "".join(entries) + "</tbody></table>"
+        )
+
     secondary_sections = (
-        related_table("Observed CDN edge IPs, not origin leads", results.get("cdn_edges", {}))
+        shodan_query_table(results.get("shodan_query_metrics", []))
+        + related_table("Observed CDN edge IPs, not origin leads", results.get("cdn_edges", {}))
         + related_table(
             "Related infrastructure, not origin leads",
             results.get("related_infrastructure", {}),
