@@ -102,8 +102,9 @@ def invalidate_restored_dns_evidence(registry: dict, target: str, *, as_of=None)
         if not isinstance(data, dict):
             continue
         records = data.get("records", [])
-        had_dns = False
-        had_cert = False
+        sources = data.get("sources", [])
+        had_dns = "DNS" in sources
+        had_cert = "SSL-Cert" in sources
         for record in records:
             if not isinstance(record, dict):
                 continue
@@ -114,11 +115,10 @@ def invalidate_restored_dns_evidence(registry: dict, target: str, *, as_of=None)
                     had_cert = True
                 else:
                     had_dns = True
-        sources = data.get("sources", [])
         if isinstance(sources, list):
             if had_dns:
                 sources[:] = [src for src in sources if src != "DNS"]
             if had_cert:
                 sources[:] = [src for src in sources if src != "SSL-Cert"]
-        if data.get("evidence_status") is not None:
+        if had_dns or had_cert or data.get("evidence_status") is not None:
             data.update(classify_target_evidence(target, records, as_of=as_of))
