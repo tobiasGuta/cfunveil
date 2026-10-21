@@ -340,6 +340,39 @@ prove current DNS ownership, bypass Cloudflare, or grant authorization to probe
 a candidate IP. Missing Shodan timestamps remain unknown. No new provider
 queries, API-key requirements, or live IP probes are introduced by this feature.
 
+## Shodan query-effectiveness measurements
+
+The top-level JSON field `shodan_query_metrics` and the HTML report now show a
+row **for every attempted Shodan search query**, including successful
+zero-result searches, errors and skipped favicon lookups (when unavailable).
+No queries were removed or reordered. Metrics reflect the requested scan
+hostname and public-suffix-aware scope, with no target-specific rules.
+
+- `returned_matches` is the number returned by the provider; `accepted_matches`
+  counts non-filtered matches. `unique_ips` measures distinct accepted IPs.
+- `incremental_new_ips` and `incremental_new_banner_evidence` depend on the
+  query execution order. `exclusive_ips` and `exclusive_banner_evidence`
+  count items observed **only by that query** within this scan, independent
+  of ordering. Repeated banners from different queries are not treated as
+  independent evidence; different banner timestamps or ports may represent
+  different observations, not proof of an origin.
+- `shared_ips` and `shared_banner_evidence` measure cross-query overlap.
+  `limit_reached: true` means the provider returned at least the configured
+  `result_limit` and the sample **may be truncated**. `provider_total`
+  is the provider's indexed match count if supplied, not the number inspected.
+- `status: error` retains only the exception type; missing counts are `null`
+  rather than misleading zero. `status: skipped` includes a reason.
+  Search retries are internal to the client and are not individually
+  measured.
+- `query_credits_used` remains `null` because the Shodan search response
+  does not report actual consumed credits. The feature does **not** make
+  extra account-info calls, incur new search queries, or estimate costs from
+  response counts.
+
+These metrics explain the **bounded result samples** from a particular
+authorized scan. They do not establish exhaustive provider coverage, prove
+a CDN bypass, or change origin-candidate classification.
+
 ## Shodan Strategies Used
 
 1. **SSL Cert Pivot** — `ssl:"example.com" -org:"Cloudflare"` (very effective)
