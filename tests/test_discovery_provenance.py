@@ -210,3 +210,50 @@ def test_html_report_shows_separate_attributed_evidence(tmp_path):
     assert "api-cloudfront.life360.com" in output
     assert "54.147.150.225" in output
     assert "nexus.dev.life360.com" in output
+
+
+
+@pytest.mark.asyncio
+async def test_apex_scan_keeps_sibling_dns_and_sibling_cloudflare_out_of_origin_leads(
+    tmp_path, monkeypatch,
+):
+    """Root-domain enumeration may find siblings, but may not promote them."""
+    from core.cert_intel import CertIntelligence
+
+    monkeypatch.chdir(tmp_path)
+    root = "example.com"
+    data = {
+        "ips": ["8.8.8.8", "9.9.9.9", "1.1.1.1"],
+        "cloudflare_ips": ["104.18.37.240", "172.64.150.73"],
+        "records": {
+            "8.8.8.8": [{"domain": root, "record_type": "A"}],
+            "9.9.9.9": [{"domain": "mail.example.com", "record_type": "A"}],
+            # An unattributed IP cannot be promoted just because it appears
+            # in the DNS module's candidate list.
+            "104.18.37.240": [{"domain": root, "record_type": "A"}],
+            "172.64.150.73": [{"domain": "api.example.com", "record_type": "A"}],
+        },
+        "subdomains": [root, "mail.example.com", "api.example.com"],
+    }
+    monkeypatch.setattr(DNSEnumerator, "run", AsyncMock(return_value=data))
+    monkeypatch.setattr(CertIntelligence, "run", AsyncMock(return_value={
+        "ips": [], "records": {}, "subdomains": [],
+    }))
+    monkeypatch.setattr(HistoricalSources, "run", AsyncMock(return_value={
+        "ips": {},
+    }))
+    monkeypatch.setattr(ASNIntelligence, "run", AsyncMock(return_value={
+        "resolved": {}, "sibling_ips": [],
+    }))
+    engine = ReconEngine({
+        "target": root, "threads": 5, "timeout": 5, "validate": False,
+    }, Console(quiet=True))
+    results = await engine.run()
+    assert set(results["ips"]) == {"8.8.8.8"}
+    assert results["ips"]["8.8.8.8"]["evidence_status"] == "current_dns_observed"
+    assert set(results["cdn_edges"]) == {"104.18.37.240"}
+    assert set(results["related_infrastructure"]) == {
+        "9.9.9.9", "1.1.1.1", "172.64.150.73",
+    }
+    assert results["related_infrastructure"]["9.9.9.9"]["records"][0]["domain"] == "mail.example.com"
+    assert results["summary"]["total_ips_found"] == 1
