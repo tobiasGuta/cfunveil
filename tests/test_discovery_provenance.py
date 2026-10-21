@@ -1,6 +1,11 @@
 """Offline candidate-attribution tests based on the observed Life360 scan patterns."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+import os
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(ROOT, "cfunveil"))
 
 import pytest
 from rich.console import Console
