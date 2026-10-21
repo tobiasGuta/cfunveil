@@ -36,7 +36,7 @@ python -m pytest tests -q
 
 The benchmark starts short-lived HTTPS servers **only on 127.0.0.0/8**, creates
 an ephemeral certificate trusted only by the test, and exercises:
-- An exact hostname with a known, seeded origin serving the same TLS-validated
+- A replayed urlscan-style provider response identifying a known origin that serves the same TLS-validated
   application response as the baseline.
 - A TLS-valid decoy returning different content, a CDN-like response, a
   redirect that must not be followed, an unreachable server, and a rejected
@@ -48,7 +48,8 @@ an ephemeral certificate trusted only by the test, and exercises:
 
 The JSON reports seeded/hidden discovery recall, positive and false-positive
 direct-application matches, status classification, and observed controls.
-The known origin is **provided by the synthetic evidence**: this lab measures
+The known origin is **provided by an in-memory urlscan-style response**, passed
+through CFUnveil's historical-source parser. The lab measures source parsing,
 evidence handling and verification, **not** real-world passive-source recall or
 success at finding a hidden production origin. It never probes bug bounty hosts.
 
