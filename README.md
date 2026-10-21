@@ -343,10 +343,12 @@ queries, API-key requirements, or live IP probes are introduced by this feature.
 ## Shodan query-effectiveness measurements
 
 The top-level JSON field `shodan_query_metrics` and the HTML report now show a
-row **for every attempted Shodan search query**, including successful
-zero-result searches, errors and skipped favicon lookups (when unavailable).
-No queries were removed or reordered. Metrics reflect the requested scan
-hostname and public-suffix-aware scope, with no target-specific rules.
+row **for every fetched Shodan query page** (or a skipped search), including
+successful zero-result searches, errors and skipped favicon lookups (when
+unavailable). No queries were removed or reordered. Metrics reflect the
+requested scan hostname and public-suffix-aware scope, with no target-specific
+rules. When optional pagination is enabled, overlap/exclusive contributions
+are calculated at page granularity rather than aggregated by query.
 
 - `returned_matches` is the number returned by the provider; `accepted_matches`
   counts non-filtered matches. `unique_ips` measures distinct accepted IPs.
@@ -362,16 +364,58 @@ hostname and public-suffix-aware scope, with no target-specific rules.
   is the provider's indexed match count if supplied, not the number inspected.
 - `status: error` retains only the exception type; missing counts are `null`
   rather than misleading zero. `status: skipped` includes a reason.
-  Search retries are internal to the client and are not individually
-  measured.
+  Original first-page retries are internal to the client and are not
+  individually measured; pagination beyond page one never retries.
 - `query_credits_used` remains `null` because the Shodan search response
-  does not report actual consumed credits. The feature does **not** make
-  extra account-info calls, incur new search queries, or estimate costs from
-  response counts.
+  does not report actual consumed credits. Query-effectiveness instrumentation
+  alone does not incur new provider queries, but explicitly enabled pagination
+  does request extra result pages. Neither feature makes account-info calls or
+  estimates credit costs from response counts.
 
 These metrics explain the **bounded result samples** from a particular
 authorized scan. They do not establish exhaustive provider coverage, prove
 a CDN bypass, or change origin-candidate classification.
+
+## Opt-in bounded Shodan pagination
+
+The default remains **one Shodan page per query**, with the same existing
+single-page request limits and no additional result-page requests.
+
+To explicitly inspect deeper provider search results on an authorized scope:
+
+```bash
+python cfunveil/main.py -t example.com --no-validate   --shodan-max-pages 3 --shodan-extra-page-budget 6   --output paged-shodan.json
+```
+
+- `--shodan-max-pages` (default 1, maximum 5) controls how many
+  100-result pages **each search query** can attempt. Values above 1 opt in
+  to pagination. When enabled, strategies that formerly retrieved only 50
+  results request 100 on page one to avoid skipping rows 51–100.
+- `--shodan-extra-page-budget` (default 8, maximum 20) caps the
+  **total number of page-2-and-later search attempts across all Shodan
+  strategies**. It counts failed attempts before the call, and extra pages
+  are never retried. With the default one-page setting, no additional page
+  requests are made. Page-one searches retain their existing retry logic.
+  This is a request cap, **not** a guarantee of exact provider credit spend.
+- The scan stops paginating a query when the indexed total is reached,
+  a page is short, a per-query page limit is reached, or the global extra
+  budget is exhausted. Page one of later queries is still attempted after
+  the extra-page budget is exhausted.
+- `shodan_query_metrics` contains **one row per fetched page**, including
+  its `page`, additional unique IPs, additional banner observations,
+  and `pagination_stop_reason`. Page-level exclusive counts are relative
+  to the other fetched pages. The top-level `shodan_pagination_budget`
+  records the configured limits and extra-page attempts.
+- Shodan documents query credits for filtered searches and page 2+.
+  Actual deducted credits are **not** observable from individual search
+  responses and remain `null` in reports. The tool does not claim a
+  precise monetary or API-credit cost, and does not query the account balance.
+  Verify available query credits independently if you intend to paginate.
+- More Shodan results are **related evidence**, not proof of an origin IP.
+  No discovered Shodan IP becomes an origin candidate without the existing
+  separately attributable exact-host evidence and authorization boundaries.
+  The tool performs no direct-IP validation when `--no-validate` is set.
+
 
 ## Shodan Strategies Used
 

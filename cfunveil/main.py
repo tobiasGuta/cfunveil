@@ -51,10 +51,12 @@ console = Console()
 @click.option("--no-validate", is_flag=True, default=False, help="Skip origin validation (faster)")
 @click.option("--authorized-cidr", multiple=True, help="IP/CIDR explicitly authorized for direct-origin validation; repeat per range")
 @click.option("--deep", is_flag=True, default=False, help="Enable deep Shodan scan (uses more API credits)")
+@click.option("--shodan-max-pages", type=click.IntRange(1, 5), default=1, show_default=True, help="Maximum Shodan result pages per query; pagination opt-in above 1")
+@click.option("--shodan-extra-page-budget", type=click.IntRange(0, 20), default=8, show_default=True, help="Hard scan-wide cap on additional Shodan page requests (page 2+); no retries")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress banner, only show results")
 @click.option("--resume", is_flag=True, default=False, help="Resume previous scan session if exists")
 @click.option("--no-wildcards", is_flag=True, default=False, help="Filter out wildcard certificates")
-def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose, resume, no_wildcards, authorized_cidr):
+def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censys_org, threads, timeout, insecure, cf_asns, validate_concurrency, debug, email_headers_file, imap_host, imap_user, imap_mailbox, imap_ssl, copyright, all, no_wait, output, no_validate, deep, quiet, verbose, resume, no_wildcards, authorized_cidr, shodan_max_pages, shodan_extra_page_budget):
     """
     cfunveil — Uncover real origin IPs hidden behind CloudFlare.
 
@@ -115,6 +117,8 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
     config = {
         "target": target,
         "shodan_key": shodan_key,
+        "shodan_max_pages": shodan_max_pages,
+        "shodan_extra_page_budget": shodan_extra_page_budget,
         "st_key": st_key,
         "censys_id": censys_id,
         "censys_secret": censys_secret,

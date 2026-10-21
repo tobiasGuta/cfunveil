@@ -34,7 +34,7 @@ class ShodanQueryMetrics:
         self._seen_ips = set()
         self._seen_evidence = set()
 
-    def success(self, *, strategy, query, limit, matches, accepted, provider_total):
+    def success(self, *, strategy, query, limit, matches, accepted, provider_total, page=1):
         """Record one completed client search invocation.
 
         'accepted' contains (IP, normalized observation) for matches retained
@@ -46,6 +46,7 @@ class ShodanQueryMetrics:
         self._rows.append({
             "strategy": strategy,
             "query": query,
+            "page": page,
             "status": "success",
             "error_type": None,
             "result_limit": limit,
@@ -70,9 +71,9 @@ class ShodanQueryMetrics:
         self._seen_ips.update(ips)
         self._seen_evidence.update(evidence)
 
-    def failure(self, *, strategy, query, limit, error_type):
+    def failure(self, *, strategy, query, limit, error_type, page=1):
         self._rows.append({
-            "strategy": strategy, "query": query, "status": "error",
+            "strategy": strategy, "query": query, "page": page, "status": "error",
             "error_type": error_type, "result_limit": limit,
             "limit_reached": None, "provider_total": None,
             "returned_matches": None, "accepted_matches": None,
@@ -86,12 +87,18 @@ class ShodanQueryMetrics:
         self._ip_sets.append(set())
         self._evidence_sets.append(set())
 
-    def skipped(self, *, strategy, reason):
+    def skipped(self, *, strategy, reason, query=None, page=None, limit=None):
         self.failure(
-            strategy=strategy, query=None, limit=None, error_type=None,
+            strategy=strategy, query=query, limit=limit, error_type=None,
+            page=page,
         )
         self._rows[-1]["status"] = "skipped"
         self._rows[-1]["skip_reason"] = reason
+
+    def mark_stop(self, reason):
+        """Annotate the most recent page outcome with its pagination stop."""
+        if self._rows:
+            self._rows[-1]["pagination_stop_reason"] = reason
 
     def snapshot(self):
         ip_frequency = Counter(ip for ips in self._ip_sets for ip in ips)

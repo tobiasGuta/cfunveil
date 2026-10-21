@@ -15,6 +15,18 @@ from core.headers_probe import HeadersProbe
 from core.cert_intel import CertIntelligence
 
 
+@pytest.fixture(autouse=True)
+def isolated_test_directory(tmp_path, monkeypatch):
+    """Keep CLI integration tests independent of real scan-session files.
+
+    A user may run CFUnveil from the repository root, creating a session
+    with the same example hostname these tests use. Never let an unrelated
+    session trigger Click's interactive resume prompt during an offline test,
+    and never modify or remove the user's saved session.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 def test_cli_help_imports_successfully():
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0, result.output
