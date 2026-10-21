@@ -158,7 +158,7 @@ def _generate_html(results: dict, output_path: str, target: str):
         return (
             "<h2>Shodan query effectiveness (bounded observations)</h2>"
             + budget_description
-            "<p>New IPs and evidence depend on query order; exclusive counts "
+            + "<p>New IPs and evidence depend on query order; exclusive counts "
             "do not. Reaching a result limit suggests possible truncation. "
             "Per-query credit costs are not available from this source.</p>"
             "<table><thead><tr>"
