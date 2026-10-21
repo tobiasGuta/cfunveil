@@ -163,7 +163,10 @@ async def _discovered_leads(*, include_origin):
         "lab.test", {}, Console(quiet=True), FakeSession(), target=TARGET
     )
     await source._query_urlscan()
-    engine = ReconEngine({"target": TARGET}, Console(quiet=True))
+    # Synthetic .test is intentionally outside the public suffix list.
+    # Override root selection inside this lab only; production remains strict.
+    with patch("core.scope.registrable_domain", return_value="lab.test"):
+        engine = ReconEngine({"target": TARGET}, Console(quiet=True))
     for ip, metadata in source.found_ips.items():
         engine._add_historical_ip(ip, metadata)
     assert "203.0.113.45" not in engine.discovered_ips
