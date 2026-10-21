@@ -23,6 +23,19 @@ class ShodanPivot:
         self.api = shodan.Shodan(config["shodan_key"])
         self.found_ips: dict[str, dict] = {}
         self.query_metrics = ShodanQueryMetrics()
+        # A disabled-by-default page cap plus one scan-wide additional-page
+        # request budget. Check again here for callers bypassing Click.
+        def bounded_integer(name, default, low, high):
+            value = config.get(name, default)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"{name} must be an integer from {low} to {high}")
+            return value
+
+        self.max_pages = bounded_integer("shodan_max_pages", 1, 1, 5)
+        self.extra_page_budget = bounded_integer(
+            "shodan_extra_page_budget", 8, 0, 20,
+        )
+        self.extra_page_requests_used = 0
         import logging
         self.logger = logging.getLogger("cfunveil.shodan")
         # allow overriding CF ASNs via config
@@ -74,7 +87,17 @@ class ShodanPivot:
                 self.console.print(f"    [dim yellow]Shodan {name} error: {e}[/dim yellow]")
                 self.logger.debug("Unexpected error in Shodan strategy %s: %s", name, e)
 
-        return {"ips": self.found_ips, "query_metrics": self.query_metrics.snapshot()}
+        return {
+            "ips": self.found_ips,
+            "query_metrics": self.query_metrics.snapshot(),
+            "pagination_budget": {
+                "max_pages_per_query": self.max_pages,
+                "extra_page_request_budget": self.extra_page_budget,
+                "extra_page_requests_attempted": self.extra_page_requests_used,
+                # The API does not give per-request actual credit deduction.
+                "actual_query_credits_used": None,
+            },
+        }
 
     def _add_result(self, result: dict, *, strategy: str, query: str):
         """Accumulate compact banner evidence without promoting an origin lead.
@@ -161,45 +184,78 @@ class ShodanPivot:
 
     def _execute_query(self, query: str, *, strategy: str, limit: int,
                        retry: bool = False):
-        """Keep existing queries and limits; record each logical search.
+        """Fetch one page by default, or bounded pages when explicitly enabled.
 
-        The retry helper's HTTP attempts and provider credit consumption are
-        not observable, so these are not reported as precise API call costs.
+        The Shodan API uses 100-result pages. Single-page mode retains the
+        original configured limit and retry behavior. With pagination enabled,
+        fetch 100 on page one to avoid skipping indices 51–100 for strategies
+        whose legacy single-page limit was 50.
         """
-        try:
-            if retry:
-                from core.utils import sync_retry
-                payload = sync_retry(
-                    self.api.search, query, limit=limit, attempts=3,
-                    exceptions=(shodan.APIError,),
+        page_limit = 100 if self.max_pages > 1 else limit
+        for page in range(1, self.max_pages + 1):
+            if page > 1:
+                # Charge budget BEFORE the search call, including a failed
+                # attempt. Extra pages are never retried; the existing
+                # first-page retry policy is untouched.
+                if self.extra_page_requests_used >= self.extra_page_budget:
+                    self.query_metrics.mark_stop("global_extra_page_budget")
+                    break
+                self.extra_page_requests_used += 1
+            try:
+                if page == 1 and retry:
+                    from core.utils import sync_retry
+                    payload = sync_retry(
+                        self.api.search, query, limit=page_limit, attempts=3,
+                        exceptions=(shodan.APIError,),
+                    )
+                elif page == 1:
+                    payload = self.api.search(query, limit=page_limit)
+                else:
+                    payload = self.api.search(
+                        query, page=page, limit=page_limit,
+                    )
+                if not isinstance(payload, dict):
+                    raise ValueError("Shodan search response must be an object")
+                matches = payload.get("matches", [])
+                if not isinstance(matches, list):
+                    raise ValueError("Shodan matches must be a list")
+                accepted = []
+                for match in matches:
+                    retained = self._add_result(
+                        match, strategy=strategy, query=query,
+                    )
+                    if retained is not None:
+                        accepted.append(retained)
+                provider_total = payload.get("total")
+                if (
+                    not isinstance(provider_total, int)
+                    or isinstance(provider_total, bool)
+                    or provider_total < 0
+                ):
+                    provider_total = None
+                self.query_metrics.success(
+                    strategy=strategy, query=query, page=page,
+                    limit=page_limit, matches=matches, accepted=accepted,
+                    provider_total=provider_total,
                 )
-            else:
-                payload = self.api.search(query, limit=limit)
-            matches = payload.get("matches", []) if isinstance(payload, dict) else []
-            if not isinstance(matches, list):
-                raise ValueError("Shodan matches must be a list")
-            accepted = []
-            for match in matches:
-                retained = self._add_result(match, strategy=strategy, query=query)
-                if retained is not None:
-                    accepted.append(retained)
-            provider_total = payload.get("total") if isinstance(payload, dict) else None
-            if (
-                not isinstance(provider_total, int)
-                or isinstance(provider_total, bool)
-                or provider_total < 0
-            ):
-                provider_total = None
-            self.query_metrics.success(
-                strategy=strategy, query=query, limit=limit,
-                matches=matches, accepted=accepted, provider_total=provider_total,
-            )
-        except Exception as exc:
-            self.query_metrics.failure(
-                strategy=strategy, query=query, limit=limit,
-                error_type=type(exc).__name__,
-            )
-            raise
+            except Exception as exc:
+                self.query_metrics.failure(
+                    strategy=strategy, query=query, page=page,
+                    limit=page_limit, error_type=type(exc).__name__,
+                )
+                raise
+
+            # Only follow full-sized pages. A partial page with total >100
+            # must not trick us into skipping unseen first-page entries.
+            if provider_total is not None and page * 100 >= provider_total:
+                self.query_metrics.mark_stop("provider_total_reached")
+                break
+            if len(matches) < 100:
+                self.query_metrics.mark_stop("short_page")
+                break
+            if page == self.max_pages:
+                self.query_metrics.mark_stop("per_query_page_cap")
+                break
 
     # ── Search Strategy 1: SSL Cert Pivot (Most Reliable) ────────────
     def _ssl_cert_pivot(self):
