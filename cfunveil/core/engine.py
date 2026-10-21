@@ -26,10 +26,11 @@ class ReconEngine:
         self.target = config["target"].rstrip(".").lower()
         if not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z0-9-]{2,63}", self.target):
             raise ValueError("target must be a valid domain name, not a URL or path")
-        parts = self.target.rstrip(".").lower().split(".")
-        if len(parts) < 2 or not all(parts):
-            raise ValueError("target must be a domain name")
-        self.root_domain = ".".join(parts[-2:])
+        # Suffix-aware scope selection is essential for .co.uk and private
+        # suffixes (e.g. example.github.io). An invalid root must fail closed:
+        # never broaden a requested hostname into a public suffix.
+        from core.scope import registrable_domain
+        self.root_domain = registrable_domain(self.target)
         self.discovered_ips: dict[str, dict] = {}
         self.related_ips: dict[str, dict] = {}
         self.cdn_edges: dict[str, dict] = {}
