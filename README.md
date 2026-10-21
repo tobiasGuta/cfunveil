@@ -312,10 +312,15 @@ python cfunveil/main.py -t example.com --shodan-key KEY --output report.html
 
 Every Shodan match now carries **per-observation, target-relative evidence**
 in the JSON report at
-`related_infrastructure[IP].details.shodan_evidence`.
+`related_infrastructure[IP].details.shodan_evidence`. If the same IP also has
+independent exact-host DNS/historical evidence or is a target CDN edge, the
+Shodan observations appear in that surviving bucket's `details.shodan_evidence`
+with `context_sources: ["Shodan"]`, **without adding Shodan to its
+verification-scoring sources**.
 Each observation retains its search `strategy`, exact `query`, any Shodan
 `timestamp`/`last_update` as `observed_at` (or `null`), the banner `port`,
-its observed `hostnames`, and separately recorded certificate names.
+its observed `hostnames`, individually preserved product/version/JARM details,
+and separately recorded certificate names.
 Repeated results for one IP are deduplicated without overwriting evidence from
 different queries or timestamps. A maximum of 128 distinct observations is
 stored per IP; additional observations are counted in
@@ -329,13 +334,13 @@ public-suffix-aware scope, never from a hardcoded customer/domain:
 - `fingerprint_only` — a favicon/JARM/header-fingerprint search match without a matching hostname
 - `query_only` — search match without independently reported in-scope hostname evidence
 
-Search results, matching certificate names, shared fingerprints and multiple
+Shodan-only results, matching certificate names, shared fingerprints and multiple
 queries **remain related infrastructure**. They do not create an origin lead,
 prove current DNS ownership, bypass Cloudflare, or grant authorization to probe
 a candidate IP. Missing Shodan timestamps remain unknown. No new provider
 queries, API-key requirements, or live IP probes are introduced by this feature.
 
-`## Shodan Strategies Used`
+## Shodan Strategies Used
 
 1. **SSL Cert Pivot** — `ssl:"example.com" -org:"Cloudflare"` (very effective)
 2. **Hostname Search** — `hostname:"example.com" -org:"Cloudflare"`
