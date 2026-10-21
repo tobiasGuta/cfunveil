@@ -2,7 +2,7 @@
 
 **CloudFlare Origin IP Discovery Tool for Bug Bounty Hunters and Security Researchers**
 
-The core purpose of `cfunveil` is to accurately uncover real origin IP addresses hidden behind reverse proxies and CDNs (Content Delivery Networks) like Cloudflare. It chains together multiple OSINT and active reconnaissance modules—such as SSL Certificate Transparency logs, historical DNS records, Shodan pivoting, and autonomous ASN intelligence—to map out potential origins. A probabilistic validation engine then actively probes those IPs to determine a confidence score based on TLS matches, HTTP response fingerprints, and other correlating signals. This significantly reduces the noise typical in origin discovery and enables researchers to perform direct infrastructure assessments bypassing WAF protections.
+CFUnveil gathers passive intelligence to identify possible origin IP addresses associated with websites behind Cloudflare and other CDNs. Discovery sources include certificate-transparency logs, historical DNS, Shodan and ASN intelligence. For explicitly authorized IP ranges, a separate validator compares direct HTTPS evidence with the normal hostname response. Its ranking score is heuristic, and a verified application match does not by itself establish WAF bypass or reportable impact.
 
 ## Reliability and authorization update (October 2026)
 
@@ -59,7 +59,7 @@ Run tests locally:
 python -m pytest tests
 ```
 
-If you want me to push these changes and the new CI workflow to the repo, tell me and I'll commit and push.
+The repository includes a GitHub Actions workflow that runs syntax checks and isolated regression tests.
 
 ---
 
@@ -68,7 +68,7 @@ If you want me to push these changes and the new CI workflow to the repo, tell m
 ```bash
 git clone https://github.com/tobiasGuta/cfunveil.git
 cd cfunveil
-pip install -r requirements.txt
+pip install -r cfunveil/requirements.txt
 ```
 
 You can place API keys in a `.env` file at the project root (the CLI also reads environment variables):
