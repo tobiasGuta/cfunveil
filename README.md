@@ -23,6 +23,36 @@ not CDN-edge evidence for the requested hostname.
 New scan checkpoints use a `_session_v3.json` suffix so old, overinclusive
 scan results cannot silently reappear after `--resume`.
 
+
+### Controlled origin-discovery benchmark
+
+Run the fully isolated HTTPS lab on Linux with Python, project dependencies,
+and the `openssl` CLI installed:
+
+```bash
+python scripts/run_origin_benchmark.py --output origin-benchmark.json
+python -m pytest tests -q
+```
+
+The benchmark starts short-lived HTTPS servers **only on 127.0.0.0/8**, creates
+an ephemeral certificate trusted only by the test, and exercises:
+- An exact hostname with a known, seeded origin serving the same TLS-validated
+  application response as the baseline.
+- A TLS-valid decoy returning different content, a CDN-like response, a
+  redirect that must not be followed, an unreachable server, and a rejected
+  out-of-scope address.
+- A negative discovery fixture deliberately lacking evidence for the known
+  origin, which must **not** be invented as a lead.
+- Regression coverage confirming the **production** validator still refuses
+  direct requests to private/loopback addresses.
+
+The JSON reports seeded/hidden discovery recall, positive and false-positive
+direct-application matches, status classification, and observed controls.
+The known origin is **provided by the synthetic evidence**: this lab measures
+evidence handling and verification, **not** real-world passive-source recall or
+success at finding a hidden production origin. It never probes bug bounty hosts.
+
+
 - Fresh scans and resumable sessions preserve accumulated evidence correctly.
 - TLS connections to candidate IPs preserve the target's **Host header and SNI**,
   verify the hostname's certificate, and confirm the connected peer. Redirects
