@@ -181,3 +181,28 @@ async def test_certificate_intel_retains_only_exact_requested_subdomain(monkeypa
             {"domain": "api-cloudfront.life360.com", "record_type": "cert-hostname-DNS-A"}
         ]
     }
+
+
+def test_html_report_shows_separate_attributed_evidence(tmp_path):
+    from output.reporter import generate_report
+    path = tmp_path / "evidence.html"
+    generate_report({
+        "target": "api-cloudfront.life360.com",
+        "summary": {"total_ips_found": 0},
+        "ips": {},
+        "cdn_edges": {"104.18.37.240": {
+            "sources": ["Historical-DNS"],
+            "records": [{"domain": "api-cloudfront.life360.com"}],
+        }},
+        "related_infrastructure": {"54.147.150.225": {
+            "sources": ["Historical-DNS"],
+            "records": [{"domain": "nexus.dev.life360.com"}],
+        }},
+    }, str(path), "api-cloudfront.life360.com")
+    output = path.read_text()
+    assert "Observed CDN edge IPs, not origin leads" in output
+    assert "Related infrastructure, not origin leads" in output
+    assert "104.18.37.240" in output
+    assert "api-cloudfront.life360.com" in output
+    assert "54.147.150.225" in output
+    assert "nexus.dev.life360.com" in output
