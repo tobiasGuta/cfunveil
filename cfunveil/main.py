@@ -99,7 +99,7 @@ def main(target, shodan_key, st_key, censys_id, censys_secret, censys_pat, censy
         timeout = 8
 
 
-    session_file = f"cfunveil_{target.replace('.', '_')}_session.json"
+    session_file = f"cfunveil_{target.lower().rstrip('.').replace('.', '_')}_session_v2.json"
     import os
     if not resume and os.path.exists(session_file):
         if click.confirm(f"[!] Found existing session file '{session_file}'. Do you want to resume?", default=True):
