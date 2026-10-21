@@ -76,15 +76,22 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
     stats.add_column()
     stats.add_column()
     stats.add_row(
-        f"[bold cyan]IPs Found[/bold cyan]\n[bold white]{len(ips)}[/bold white]",
+        f"[bold cyan]Origin Leads[/bold cyan]\n[bold white]{len(ips)}[/bold white]",
         f"[bold green]Verified Direct Matches[/bold green]\n[bold white]{len(confirmed_origins)}[/bold white]",
         f"[bold yellow]Subdomains[/bold yellow]\n[bold white]{len(subdomains)}[/bold white]",
         f"[bold magenta]Identified Clusters[/bold magenta]\n[bold white]{len(clusters)}[/bold white]"
     )
     console.print(Panel(stats, border_style="dim"))
 
+    related = results.get("related_infrastructure", {})
+    edges = results.get("cdn_edges", {})
+    console.print(f"[dim]Related infrastructure (not origin leads): {len(related)} · CDN edge addresses: {len(edges)}[/dim]")
     if not ips:
-        console.print("\n[yellow][!] No IPs discovered. Try --deep or add more API keys.[/yellow]")
+        console.print(
+            "\n[dim]No exact-host non-CDN origin leads found. "
+            "This is a valid negative result, not a failed scan. "
+            "Check the JSON report for related hostnames and CDN evidence.[/dim]"
+        )
         return
 
     # ── Top Candidates (highlight) ────────────────────────────────
