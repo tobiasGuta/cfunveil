@@ -112,7 +112,7 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
                 f"[bold white]{ip}[/bold white]   "
                 f"[{tier_color}]{tier} Tier ({conf_pct}%)[/{tier_color}]\n"
                 f"[dim]Org:[/dim] {org}  [dim]Sources:[/dim] {sources}\n"
-                f"[dim]Verification:[/dim] {data.get('verification_status', 'not_tested')}\n"
+                f"[dim]Verification:[/dim] {data.get('verification_status', 'not_tested')}\n"                f"[dim]Discovery evidence:[/dim] {data.get('evidence_status', 'unclassified')}\n"
                 f"[bold cyan]Signals:[/bold cyan] {justif}\n"
             )
             
@@ -167,6 +167,8 @@ def print_summary(results: dict, console: Console, verbose: bool = False):
             ip_str = m["ip"]
             server = m.get("server_header", "")[:20]
             summary = m.get("org", m.get("isp", ""))[:30]
+            if m.get("evidence_status"):
+                summary = (summary + " · " if summary else "") + m["evidence_status"]
         else:
             first_ip = m_list[0]["ip"]
             extra = len(m_list) - 1
