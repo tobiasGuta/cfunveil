@@ -35,7 +35,13 @@ def _entries(*values):
 
 
 def _sources(data):
-    values = list(data.get("sources", ())) + list(data.get("context_sources", ()))
+    values = []
+    for key in ("sources", "context_sources"):
+        raw = data.get(key)
+        if isinstance(raw, str):
+            values.append(raw)
+        elif isinstance(raw, (list, tuple, set)):
+            values.extend(raw)
     return {s for s in values if isinstance(s, str) and s.strip()}
 
 
@@ -95,6 +101,8 @@ def correlate_scan_evidence(
         dated_historical = set()
         historical_providers = set()
         related_hostnames = set()
+        related_signatures = set()
+        related_record_sources = set()
         exact_records = []
         for signature, record in records.items():
             name = _name(record.get("domain"))
@@ -102,15 +110,19 @@ def correlate_scan_evidence(
                 continue
             if name != target:
                 related_hostnames.add(name)
+                related_signatures.add(signature)
+                if isinstance(record.get("source"), str) and record["source"].strip():
+                    related_record_sources.add(record["source"])
                 continue
             kind = record.get("record_type")
-            exact_records.append(record)
             if kind in _CURRENT_DNS_TYPES:
+                exact_records.append(record)
                 if record.get("observation_status") == "previous_run":
                     previous_dns.add(signature)
                 else:
                     current_dns.add(signature)
             elif isinstance(record.get("source"), str) and record["source"].strip():
+                exact_records.append(record)
                 historical.add(signature)
                 historical_providers.add(record["source"])
                 time = parse_observation_time(record.get("last_seen"))
@@ -142,6 +154,8 @@ def correlate_scan_evidence(
             families.append("previous_run_dns")
         if historical:
             families.append("historical_dns")
+        if related_signatures:
+            families.append("related_hostname_records")
         if observations:
             families.append("shodan_observations")
         if sources & {"FOFA", "ZoomEye", "Email-Header"}:
@@ -162,6 +176,8 @@ def correlate_scan_evidence(
                 "historical_source_labels": sorted(historical_providers),
             },
             "related_host_context": {
+                "records": len(related_signatures),
+                "record_source_labels": sorted(related_record_sources),
                 "hostnames": sorted(related_hostnames)[:32],
                 "omitted_hostnames": max(0, len(related_hostnames) - 32),
             },
