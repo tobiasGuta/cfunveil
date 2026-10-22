@@ -61,11 +61,15 @@ def test_exact_current_host_with_related_shodan_never_reclassifies_or_scores():
     assert entry["category"] == "origin_lead"
     assert entry["origin_verified"] is False
     assert entry["source_labels"] == ["DNS", "Historical-DNS", "Shodan"]
-    assert entry["evidence_families"] == ["current_dns", "shodan_observations"]
+    assert entry["evidence_families"] == [
+        "current_dns", "related_hostname_records", "shodan_observations",
+    ]
     assert entry["exact_target"]["evidence_status"] == "current_dns_observed"
     assert entry["exact_target"]["current_dns_records"] == 1
     assert entry["exact_target"]["historical_records"] == 0
     assert entry["related_host_context"]["hostnames"] == ["portal.example.co.uk"]
+    assert entry["related_host_context"]["records"] == 1
+    assert entry["related_host_context"]["record_source_labels"] == ["hackertarget"]
     assert entry["shodan_context"] == {
         "retained_query_observations": 2,
         "distinct_banner_observations": 1,
@@ -285,3 +289,19 @@ def test_html_correlation_escapes_untrusted_provider_labels(tmp_path):
     assert "current_dns_observed" in html
     assert "&lt;script&gt;" in html
     assert "<script>alert(1)</script>" not in html
+
+
+
+def test_incomplete_exact_record_cannot_invent_historical_evidence():
+    target = "api.example.net"
+    result = correlate_scan_evidence(
+        target, "example.net", {}, {
+            "9.9.9.9": {"sources": ["Unknown"], "records": [
+                {"domain": target, "arbitrary": "unattributed"},
+            ]},
+        }, {}, as_of=AS_OF,
+    )
+    entry = result["ips"]["9.9.9.9"]
+    assert entry["exact_target"]["evidence_status"] == "no_exact_target_evidence"
+    assert entry["exact_target"]["historical_records"] == 0
+    assert entry["evidence_families"] == []
