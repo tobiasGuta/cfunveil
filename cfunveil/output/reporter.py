@@ -170,8 +170,71 @@ def _generate_html(results: dict, output_path: str, target: str):
             + "".join(entries) + "</tbody></table>"
         )
 
+    def correlation_table(correlations):
+        if not isinstance(correlations, dict):
+            return ""
+        rows_by_ip = correlations.get("ips", {})
+        if not isinstance(rows_by_ip, dict) or not rows_by_ip:
+            return ""
+        summary = correlations.get("summary", {})
+        summary = summary if isinstance(summary, dict) else {}
+        interesting = [
+            (ip, entry) for ip, entry in sorted(rows_by_ip.items())
+            if isinstance(entry, dict) and (
+                entry.get("same_ip_multi_family")
+                or "exact_target_hostname" in entry.get(
+                    "shodan_context", {},
+                ).get("observation_relations", [])
+            )
+        ]
+        count = len(interesting)
+        body = []
+        for ip, entry in interesting[:100]:
+            exact = entry.get("exact_target", {})
+            context = entry.get("shodan_context", {})
+            fields = (
+                ip, entry.get("category", "unknown"),
+                exact.get("evidence_status", "unknown"),
+                ", ".join(entry.get("evidence_families", [])) or "—",
+                ", ".join(exact.get("historical_source_labels", [])) or "—",
+                ", ".join(context.get("observation_relations", [])) or "—",
+                str(context.get("distinct_banner_observations", 0)),
+            )
+            body.append(
+                "<tr>" + "".join("<td>" + _html(x) + "</td>" for x in fields)
+                + "</tr>"
+            )
+        if not body:
+            table_html = "<p>No same-IP multi-family observations identified.</p>"
+        else:
+            table_html = (
+                "<table><thead><tr><th>IP</th><th>Existing category</th>"
+                "<th>Exact-host evidence</th><th>Families present</th>"
+                "<th>Historical source labels</th><th>Shodan reports</th>"
+                "<th>Distinct Shodan banners</th></tr></thead><tbody>"
+                + "".join(body) + "</tbody></table>"
+            )
+        hidden = count - len(body)
+        suffix = (
+            "<p>" + str(hidden) + " additional correlation rows are in JSON.</p>"
+            if hidden else ""
+        )
+        return (
+            "<h2>Same-IP evidence correlation (not origin proof)</h2>"
+            "<p>Observed record families are descriptive context only. "
+            "Historical and Shodan results may reuse upstream data; "
+            "query counts and provider labels do not establish independent "
+            "confirmation, current ownership or permission to probe.</p>"
+            "<p>IPs indexed: " + _html(summary.get("total_correlated_ips", len(rows_by_ip)))
+            + " · multi-family: " + _html(summary.get("multi_family_ips", 0))
+            + " · exact-host record plus Shodan context: "
+            + _html(summary.get("exact_target_with_shodan_context", 0))
+            + "</p>" + table_html + suffix
+        )
+
     secondary_sections = (
-        shodan_query_table(
+        correlation_table(results.get("evidence_correlations"))
+        + shodan_query_table(
             results.get("shodan_query_metrics", []),
             results.get("shodan_pagination_budget"),
         )

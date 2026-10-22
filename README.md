@@ -376,6 +376,42 @@ These metrics explain the **bounded result samples** from a particular
 authorized scan. They do not establish exhaustive provider coverage, prove
 a CDN bypass, or change origin-candidate classification.
 
+## Cross-source same-IP evidence correlation (read-only)
+
+JSON reports include `evidence_correlations`: an **IP-keyed, deterministic
+context index** separate from discovery and verification. HTML reports show
+a bounded table for IPs with multiple recorded evidence families or an
+exact-host Shodan banner. The index is built from the final scan data,
+including any related records otherwise hidden because an IP also appears
+in the origin-lead or CDN category.
+
+For each IP it preserves the **existing category** (`origin_lead`,
+`cdn_edge` or `related_infrastructure`) and distinguishes:
+
+- Exact requested-host current DNS observations (A, AAAA, CNAME-address
+  resolutions and certificate-hostname **DNS resolution**, not certificates
+  alone), previously saved DNS observations, and dated/undated historical
+  records. Stored historical source labels and observation dates do not
+  establish current DNS ownership.
+- Sibling-hostname record context as its own descriptive family, including
+  source labels and a bounded hostname list, scoped using the requested
+  hostname's existing public-suffix-aware root. Lookalike and outside-scope
+  hostname records cannot become exact-host evidence.
+- Shodan's retained query observations, observed hostname relations, and
+  distinct banner observations. Repeated Shodan searches that return the
+  same banner count **once** toward distinct banners, not independent
+  corroboration. Previously truncated per-IP observations are identified.
+- Descriptive source labels and evidence families, without calculating
+  an origin probability or giving a candidate a Shodan score bonus.
+
+The index does **not** change origin-lead eligibility, CDN-edge handling,
+verification, authorized-IP boundaries, saved scan sessions, query budgets,
+or provider activity. In particular, an IP observed by both historical
+DNS and Shodan is *not automatically a confirmed origin*, and sources
+may share upstream datasets. A Shodan exact-hostname observation with no
+independent DNS/history stays related infrastructure.
+
+
 ## Opt-in bounded Shodan pagination
 
 The default remains **one Shodan page per query**, with the same existing

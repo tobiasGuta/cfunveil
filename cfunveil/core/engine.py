@@ -213,6 +213,7 @@ class ReconEngine:
             "cdn_edges": {},
             "shodan_query_metrics": [],
             "shodan_pagination_budget": None,
+            "evidence_correlations": {"ips": {}, "summary": {}},
             "validated_origins": [],
             "asn_data": {},
             "summary": {}
@@ -455,6 +456,16 @@ class ReconEngine:
             if ip not in self.discovered_ips and ip not in self.cdn_edges
         }
         results["cdn_edges"] = self.cdn_edges
+
+        # Read-only correlation intentionally runs AFTER classification and
+        # validation. It also sees the hidden related bucket when an IP occurs
+        # in both related and candidate/CDN groups. Never feed this index back
+        # into a candidate score, source list, or authorization decision.
+        from core.correlation import correlate_scan_evidence
+        results["evidence_correlations"] = correlate_scan_evidence(
+            self.target, self.root_domain, results["ips"],
+            self.related_ips, self.cdn_edges, as_of=self.evidence_as_of,
+        )
 
         # ── Summary ─────────────────────────────────────────────────
         results["summary"] = {
