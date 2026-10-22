@@ -25,7 +25,7 @@ def _rows(value):
 
 def _safe_relations(entry):
     values = _mapping(entry.get("shodan_context", {})).get("observation_relations", [])
-    return set(values) if isinstance(values, list) else set()
+    return {value for value in values if isinstance(value, str)} if isinstance(values, list) else set()
 
 
 def evaluate_evidence_utility(report: dict, *, as_of=None) -> dict:
@@ -194,6 +194,7 @@ def evaluate_evidence_utility(report: dict, *, as_of=None) -> dict:
             "omitted_shodan_query_observations": omitted_banners,
         },
         "shodan_sample_efficiency": {
+            "query_page_metrics_present": bool(query_rows),
             "successful_search_pages": len(succeeded),
             "failed_search_pages": failures,
             "skipped_searches": skipped,
