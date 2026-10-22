@@ -393,9 +393,10 @@ For each IP it preserves the **existing category** (`origin_lead`,
   alone), previously saved DNS observations, and dated/undated historical
   records. Stored historical source labels and observation dates do not
   establish current DNS ownership.
-- Sibling-hostname record context, scoped using the requested hostname's
-  existing public-suffix-aware root; lookalike and outside-scope hostname
-  records cannot become exact-host evidence.
+- Sibling-hostname record context as its own descriptive family, including
+  source labels and a bounded hostname list, scoped using the requested
+  hostname's existing public-suffix-aware root. Lookalike and outside-scope
+  hostname records cannot become exact-host evidence.
 - Shodan's retained query observations, observed hostname relations, and
   distinct banner observations. Repeated Shodan searches that return the
   same banner count **once** toward distinct banners, not independent
