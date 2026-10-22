@@ -376,6 +376,46 @@ These metrics explain the **bounded result samples** from a particular
 authorized scan. They do not establish exhaustive provider coverage, prove
 a CDN bypass, or change origin-candidate classification.
 
+## Evaluate discovery usefulness from existing reports (offline)
+
+Run a **read-only evidence-utility audit** against a previously saved CFUnveil
+JSON report. This performs no DNS requests, Shodan searches, direct-IP probes
+or provider credit-consuming calls and never changes the input report:
+
+```bash
+python cfunveil/audit_evidence.py /path/to/report.json
+```
+
+For older reports that do not contain embedded `evidence_correlations`,
+the evaluator reconstructs what it can from the **visible** saved
+origin/related/CDN buckets. A previous scan may have suppressed related-bucket
+details on IPs that were also candidates or CDN edges. The reconstruction is
+therefore **not guaranteed to be complete**. To make historical interpretation
+reproducible on an older report, supply an audit date:
+
+```bash
+python cfunveil/audit_evidence.py /path/to/older.json   --as-of 2026-10-21T20:00:00Z
+```
+
+The output distinguishes:
+- Existing origin-lead, CDN and related-IP classifications and the scan's
+  own *reported* direct matches, with no new verification or rescoring.
+- Exact-host current/historical DNS status, related-host context and
+  associated Shodan banners; overlaps are counted per existing category,
+  **not** as independent corroboration.
+- Shodan query-page completion and extra-page incremental IP/banner
+  contributions when measured in the original report. Actual API-credit
+  deductions remain unknown.
+- Missing or incomplete data, especially older reports without the new
+  embedded correlation index.
+
+It cannot calculate precision/recall, real-origin correctness, or cost per
+confirmed origin without independently established ground truth. The
+individual Shodan observations also do not include the result page number,
+so exact-host relevance cannot currently be attributed to a particular
+Shodan page. The audit is descriptive, never authorization for testing.
+
+
 ## Cross-source same-IP evidence correlation (read-only)
 
 JSON reports include `evidence_correlations`: an **IP-keyed, deterministic
